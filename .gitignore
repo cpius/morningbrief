@@ -1,0 +1,7 @@
+# build output
+portfolio.html
+site/
+.vercel/
+# secrets never go in this repo
+.env*
+__pycache__/
