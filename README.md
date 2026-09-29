@@ -8,5 +8,8 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   `portfolio.html` and `site/index.html`. It uses only the standard library.
 - `research.json` holds "Why it moved" notes, keyed by asset id. The script prints `research MISSING: ...` for
   each position that moved at least 2¢ or $10 without a note for the current 24h window.
-- A daily Claude Code cloud routine runs the script, researches the missing movers, reruns it and deploys `site/`
-  to Vercel with `VERCEL_TOKEN` from the cloud environment.
+- `python3 deploy.py` posts `site/index.html` to the Vercel API as a production deployment. It sends no token:
+  the cloud environment's "Vercel API Token" credential adds the Authorization header for api.vercel.com.
+  To test locally, pipe `python3 deploy.py --body-only` into `vercel api "/v13/deployments?teamId=team_45ZNkd6F5HMXNUu6jGjrKr44" -X POST --input -`.
+- A daily Claude Code cloud routine (environment `morningbrief`) runs the script, researches the missing movers,
+  reruns it and deploys.
