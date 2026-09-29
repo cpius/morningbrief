@@ -20,9 +20,9 @@ SIG_USD = 10.0  # ... or its 24h $ change is at least this
 UA = {'User-Agent': 'Mozilla/5.0'}
 
 
-def get(url):
+def get(url, timeout=30):
     req = urllib.request.Request(url, headers=UA)
-    return json.load(urllib.request.urlopen(req, timeout=30))
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
 
 
 NOW = int(time.time())
@@ -273,12 +273,24 @@ def saturn_window(d):
     return None
 
 
+def get_patiently(url):
+    """Open-Meteo rate-limits shared cloud IPs (429) and the multi-model call can be slow: back off and retry."""
+    for wait in (15, 45, 90, None):
+        try:
+            return get(url, timeout=90)
+        except Exception as e:
+            if wait is None or not (getattr(e, 'code', None) in (429, 500, 502, 503, 504) or 'timed out' in str(e)):
+                raise
+            print(f"  weather: {e}, retrying in {wait}s")
+            time.sleep(wait)
+
+
 def fetch_weather():
     base = (f'https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}'
             '&timezone=Europe/Copenhagen&wind_speed_unit=ms')
-    hourly = get(base + '&forecast_days=8&models=' + ','.join(m for m, _ in MODELS) +
+    hourly = get_patiently(base + '&forecast_days=8&models=' + ','.join(m for m, _ in MODELS) +
                  '&hourly=cloud_cover,wind_speed_925hPa,temperature_2m,dew_point_2m')['hourly']
-    today = get(base + '&forecast_days=1&daily=weather_code,temperature_2m_max,temperature_2m_min,'
+    today = get_patiently(base + '&forecast_days=1&daily=weather_code,temperature_2m_max,temperature_2m_min,'
                 'precipitation_sum,precipitation_probability_max,wind_speed_10m_max,sunset')['daily']
     idx = {t: i for i, t in enumerate(hourly['time'])}
     nights = []
