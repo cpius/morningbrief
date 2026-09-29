@@ -20,8 +20,9 @@ for prefix in ('VERCEL_TOKEN=', 'Bearer ', 'bearer '):
         tok = tok[len(prefix):].strip()
 
 
-def call(path):
-    req = urllib.request.Request(f'https://api.vercel.com{path}', headers={'Authorization': f'Bearer {tok}'})
+def call(path, body=None):
+    req = urllib.request.Request(f'https://api.vercel.com{path}', headers={'Authorization': f'Bearer {tok}', 'Content-Type': 'application/json'},
+                                 data=json.dumps(body).encode() if body is not None else None)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.load(r)
@@ -37,29 +38,30 @@ def when(ms):
 
 
 status, j = call('/v5/user/tokens/current')
-if status != 200:
-    err = j.get('error', {})
-    print(f"✗ Token rejected ({status}): {err.get('message', j)}"
-          + (' — invalid or revoked' if err.get('invalidToken') else ''))
+err = j.get('error', {}) if isinstance(j, dict) else {}
+if status == 403 and (err.get('invalidToken') or err.get('missingToken')):
+    print(f"✗ Token rejected: {err.get('message')} — invalid, revoked or expired")
     sys.exit(1)
-
-t = j['token']
-print(f"✓ Valid token '{t.get('name')}' (created {when(t.get('createdAt'))}, last used {when(t.get('activeAt'))})")
-exp = t.get('expiresAt')
-if exp:
-    days = (exp / 1000 - datetime.datetime.now().timestamp()) / 86400
-    print(f"  Expires {when(exp)} ({days:.0f} days from now)" + ('  ⚠ soon' if days < 30 else ''))
+if status == 200:
+    t = j['token']
+    print(f"✓ Valid token '{t.get('name')}' (created {when(t.get('createdAt'))}, last used {when(t.get('activeAt'))})")
+    exp = t.get('expiresAt')
+    if exp:
+        days = (exp / 1000 - datetime.datetime.now().timestamp()) / 86400
+        print(f"  Expires {when(exp)} ({days:.0f} days from now)" + ('  ⚠ soon' if days < 30 else ''))
+    else:
+        print('  Never expires')
+    scopes = t.get('scopes', [])
+    teams = [s.get('teamId') for s in scopes if s.get('type') == 'team']
+    if TEAM in teams:
+        print('  Scope: OxeanX team ✓')
+    elif any(s.get('type') == 'user' for s in scopes):
+        print('  Scope: your personal account (full access to your teams)')
+    else:
+        print(f"  Scope: {teams or scopes} — not OxeanX ✗")
 else:
-    print('  Never expires')
-
-scopes = t.get('scopes', [])
-teams = [s.get('teamId') for s in scopes if s.get('type') == 'team']
-if TEAM in teams:
-    print('  Scope: OxeanX team ✓')
-elif any(s.get('type') == 'user' for s in scopes):
-    print('  Scope: your personal account (full access to your teams)')
-else:
-    print(f"  Scope: {teams or scopes} — not OxeanX ✗")
+    print(f"• Token accepted, but Vercel won't show its details ({status}: {err.get('message', '')}).")
+    print("  That usually means a team-owned token. Check its expiry in the token list on vercel.com.")
 
 status, j = call(f'/v9/projects/{PROJECT}?teamId={TEAM}')
 print(f"{'✓' if status == 200 else '✗'} Project nothing-ever-happens-book: "
@@ -67,6 +69,12 @@ print(f"{'✓' if status == 200 else '✗'} Project nothing-ever-happens-book: "
 status2, j2 = call(f'/v6/deployments?teamId={TEAM}&projectId={PROJECT}&limit=1')
 print(f"{'✓' if status2 == 200 else '✗'} Deployments: "
       + ('listable' if status2 == 200 else f"{status2} {j2.get('error', {}).get('message', '')}"))
-ok = status == 200 and status2 == 200
+# Harmless deploy-permission probe: an empty deployment is rejected as a bad request (400)
+# when the token may deploy, and as forbidden (403) when it may not. Nothing is created.
+status3, j3 = call(f'/v13/deployments?teamId={TEAM}', {})
+can_deploy = status3 == 400
+print(f"{'✓' if can_deploy else '✗'} Deploy permission: "
+      + ('yes' if can_deploy else f"{status3} {j3.get('error', {}).get('message', '')}"))
+ok = status == 200 and status2 == 200 and can_deploy
 print('\nResult: ' + ('this token can deploy the morning brief.' if ok else 'this token will NOT work for the morning brief.'))
 sys.exit(0 if ok else 1)
