@@ -4,7 +4,7 @@
 Fetches live positions and the last 24h of wallet activity, computes a
 trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 """
-import datetime, html, json, os, time, urllib.request
+import datetime, html, json, os, time, urllib.error, urllib.request
 from collections import defaultdict
 
 os.environ['TZ'] = 'Europe/Copenhagen'  # cloud runners are on UTC; all times on the page are Copenhagen
@@ -273,16 +273,44 @@ def saturn_window(d):
     return None
 
 
+RETRY_WAITS = (15, 45, 90)
+
+
+def retryable(e):
+    return getattr(e, 'code', None) in (429, 500, 502, 503, 504) or 'timed out' in str(e)
+
+
 def get_patiently(url):
     """Open-Meteo rate-limits shared cloud IPs (429) and the multi-model call can be slow: back off and retry."""
-    for wait in (15, 45, 90, None):
+    for wait in (*RETRY_WAITS, None):
         try:
             return get(url, timeout=90)
         except Exception as e:
-            if wait is None or not (getattr(e, 'code', None) in (429, 500, 502, 503, 504) or 'timed out' in str(e)):
+            if wait is None or not retryable(e):
                 raise
             print(f"  weather: {e}, retrying in {wait}s")
             time.sleep(wait)
+
+
+def fetch_failure(e):
+    """Why the forecast request failed, in words for the report."""
+    code = getattr(e, 'code', None)
+    if code:
+        try:  # Open-Meteo explains refusals in a JSON body: {"error": true, "reason": "..."}
+            detail = 'Its reply: ' + json.load(e)['reason']
+        except Exception:
+            detail = ''
+        what = ('blocked the request (HTTP 429, rate limited)' if code == 429 else
+                f'refused the request (HTTP {code} {e.reason})' if code < 500 else
+                f'had a server error (HTTP {code} {e.reason})')
+    elif 'timed out' in str(e) or isinstance(e, urllib.error.URLError):
+        what, detail = 'could not be reached', f'Error: {getattr(e, "reason", e)}'
+    else:
+        what, detail = 'sent a forecast this script could not read', f'Error: {type(e).__name__}: {e}'
+    msg = f'Open-Meteo {what} at {datetime.datetime.now():%H:%M}'
+    if retryable(e):
+        msg += f', and again on {len(RETRY_WAITS)} retries over {sum(RETRY_WAITS) / 60:.1f} min'
+    return f'{msg}. {detail}'.strip()
 
 
 def fetch_weather():
@@ -334,9 +362,12 @@ def verdict(n):
 def weather_section():
     try:
         nights, today = fetch_weather()
-    except Exception as e:  # the portfolio must still build when the forecast is down
-        print(f"  weather: skipped ({e})")
-        return ''
+    except Exception as e:  # the portfolio must still build when the forecast is down, but say why it is missing
+        msg = fetch_failure(e)
+        print(f"  weather: skipped ({msg})")
+        return ('<section class="weather"><h2>Weather</h2>'
+                f'<p class="wx-today"><span class="chip-warn">No forecast today</span> {html.escape(msg)}</p>'
+                '</section>')
     day = (f"{WMO.get(today['weather_code'][0], 'mixed')}, "
            f"{today['temperature_2m_min'][0]:.0f}–{today['temperature_2m_max'][0]:.0f} °C, "
            f"rain {today['precipitation_sum'][0]:.1f} mm ({today['precipitation_probability_max'][0]}%), "
