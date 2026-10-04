@@ -274,7 +274,7 @@ def saturn_window(d):
     return None
 
 
-RETRY_WAITS = (15, 45, 90)
+RETRY_WAITS = (5, 10, 20, 40, 60, 90)  # about 4 in 10 TLS handshakes from cloud IPs fail at random
 
 
 def retryable(e):
@@ -625,11 +625,15 @@ BRIEF = f"""<div class="brief">
       </script>"""
 
 # Standalone copy for the Vercel site; the artifact adds this document skeleton itself.
+# Favicon: a blue hornbill with an orange beak, a nod to Zazu giving the Morning Report.
+FAVICON = ('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M17 18C11 9 17 3 22 11C21 2 30 1 29 13Z" fill="%232c64c8"/><circle cx="25" cy="35" r="20" fill="%232c64c8"/><ellipse cx="20" cy="47" rx="11" ry="7" fill="%23e8eef8"/><path d="M38 23C45 16 54 17 56 25C50 24 45 25 40 28Z" fill="%23ffd25a"/><path d="M38 27C49 23 60 27 63 37C56 35 47 35 39 37Z" fill="%23f59a1b"/><path d="M39 38C47 37 56 38 61 40C55 45 46 47 39 44Z" fill="%23e07a10"/><circle cx="33" cy="28" r="6.5" fill="%23fff"/><circle cx="35" cy="28.5" r="3.2" fill="%23111"/><path d="M26 21L39 23" stroke="%23173f8a" stroke-width="2.5" stroke-linecap="round"/></svg>')
 os.makedirs(os.path.join(HERE, 'site'), exist_ok=True)
 with open(os.path.join(HERE, 'site', 'index.html'), 'w') as fh:
     fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'
              '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
-             '<meta name="robots" content="noindex">\n<style>body { margin: 0; }</style>\n'
+             '<meta name="robots" content="noindex">\n'
+             f'<link rel="icon" type="image/svg+xml" href="{FAVICON}">\n'
+             '<style>body { margin: 0; }</style>\n'
              f"{page.replace('<!--BRIEF-->', BRIEF)}\n</html>\n")
 
 print(f"wrote {OUT}")
