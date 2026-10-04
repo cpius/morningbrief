@@ -246,6 +246,7 @@ def closed_item(r):
 # ---- weather: Saturn nights from the east balcony + today in Copenhagen -----
 # Method from the ASICAP sessions: cloud per model over the hours Saturn is above ~25°,
 # and seeing ranked by 925 hPa wind (sharp night 09-26: 4-6 m/s, blurry 09-27: 16-19 m/s).
+# Only low and mid cloud blocks Saturn: 03 Oct read 97% total cloud, all of it high cirrus, and imaged fine.
 LAT, LON = 55.69, 12.56
 MODELS = [('ecmwf_ifs025', 'ECMWF'), ('icon_seamless', 'ICON'), ('gfs_seamless', 'GFS'),
           ('dmi_seamless', 'DMI'), ('metno_seamless', 'MetNo')]
@@ -277,7 +278,7 @@ RETRY_WAITS = (15, 45, 90)
 
 
 def retryable(e):
-    return getattr(e, 'code', None) in (429, 500, 502, 503, 504) or 'timed out' in str(e)
+    return getattr(e, 'code', None) in (429, 500, 502, 503, 504) or any(s in str(e) for s in ('timed out', 'EOF occurred'))
 
 
 def get_patiently(url):
@@ -317,7 +318,7 @@ def fetch_weather():
     base = (f'https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}'
             '&timezone=Europe/Copenhagen&wind_speed_unit=ms')
     hourly = get_patiently(base + '&forecast_days=8&models=' + ','.join(m for m, _ in MODELS) +
-                 '&hourly=cloud_cover,wind_speed_925hPa,temperature_2m,dew_point_2m')['hourly']
+                 '&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high,wind_speed_925hPa,temperature_2m,dew_point_2m')['hourly']
     today = get_patiently(base + '&forecast_days=1&daily=weather_code,temperature_2m_max,temperature_2m_min,'
                 'precipitation_sum,precipitation_probability_max,wind_speed_10m_max,sunset')['daily']
     idx = {t: i for i, t in enumerate(hourly['time'])}
@@ -336,14 +337,17 @@ def fetch_weather():
             continue
         use = [(m, lbl) for m, lbl in MODELS if n < LOCAL_ONLY_DAYS or m not in ('dmi_seamless', 'metno_seamless')]
         mean = lambda k: sum(hourly[k][i] for i in hours) / len(hours)
-        cloud = {lbl: mean(f'cloud_cover_{m}') for m, lbl in use}
+        # Blocking cloud per hour is the thicker of the low and mid layers; high cirrus is reported separately.
+        cloud = {lbl: sum(max(hourly[f'cloud_cover_low_{m}'][i], hourly[f'cloud_cover_mid_{m}'][i])
+                          for i in hours) / len(hours) for m, lbl in use}
+        high = sorted(mean(f'cloud_cover_high_{m}') for m, _ in use)
         wind = sorted(mean(f'wind_speed_925hPa_{m}') for m, _ in use)
         spread = sorted(min(hourly[f'temperature_2m_{m}'][i] - hourly[f'dew_point_2m_{m}'][i] for i in hours)
                         for m, _ in use)
         cl = sorted(cloud.values())
         nights.append(dict(date=d, start=w[0], end=w[1], cloud=cloud, cloud_med=cl[len(cl) // 2],
                            wind=wind[len(wind) // 2], wind_lo=wind[0], wind_hi=wind[-1],
-                           dew=spread[len(spread) // 2]))
+                           dew=spread[len(spread) // 2], high=high[len(high) // 2]))
     return nights, today
 
 
@@ -382,13 +386,15 @@ def weather_section():
             cells += (f'<td class="num cc" style="--c:{min(v, 100):.0f}">{v:.0f}%</td>' if v is not None
                       else '<td class="num faint" title="Repeats ECMWF this far out">–</td>')
         dew = ' <span class="chip-warn">dew</span>' if n['dew'] <= 2 else ''
+        if n['cloud_med'] <= 60 and n['high'] > 50:
+            dew = f' <span class="chip-warn" title="High cloud {n["high"]:.0f}%">cirrus</span>' + dew
         rows.append(f'<tr><td class="mkt"><b>{n["date"]:%a} {n["date"].day} {n["date"]:%b}</b>'
                     f'<div class="sub">{n["start"]:%H:%M}–{n["end"]:%H:%M}</div></td>{cells}'
                     f'<td class="num"><b>{n["wind"]:.0f} m/s</b><div class="sub">{n["wind_lo"]:.0f}–{n["wind_hi"]:.0f}</div></td>'
                     f'<td><span class="verdict {t}">{label}</span>{dew}</td></tr>')
         print(f"  saturn night {n['date']:%a %d %b} {n['start']:%H:%M}-{n['end']:%H:%M}: "
-              f"cloud median {n['cloud_med']:.0f}% {dict((k, round(v)) for k, v in n['cloud'].items())} "
-              f"925hPa {n['wind']:.0f} m/s, dew spread {n['dew']:.1f} °C -> {label}")
+              f"low/mid cloud median {n['cloud_med']:.0f}% {dict((k, round(v)) for k, v in n['cloud'].items())} "
+              f"high {n['high']:.0f}%, 925hPa {n['wind']:.0f} m/s, dew spread {n['dew']:.1f} °C -> {label}")
     heads = ''.join(f'<th>{lbl}</th>' for _, lbl in MODELS)
     if rows:
         table = ('<div class="table-box"><table class="wx"><thead><tr><th>Night · Saturn &gt;25°</th>'
@@ -399,8 +405,9 @@ def weather_section():
     return ('<section class="weather"><h2>Weather</h2>'
             f'<p class="wx-today"><b>Copenhagen today:</b> {html.escape(day)}</p>'
             f'<h3>Saturn nights from the east balcony</h3>{table}'
-            '<p class="wx-note">Cloud is each model\'s average over the hours Saturn is above ~25° and inside the '
-            'balcony\'s clear arc. Wind at 925 hPa (~800 m up) sets the seeing: 4–6 m/s gave the sharp 26 Sep night, '
+            '<p class="wx-note">Cloud is each model\'s average low and mid cloud over the hours Saturn is above ~25° '
+            'and inside the balcony\'s clear arc. High cirrus is left out because bright Saturn images through it; '
+            '"cirrus" flags nights where most models expect it. Wind at 925 hPa (~800 m up) sets the seeing: 4–6 m/s gave the sharp 26 Sep night, '
             '16–19 m/s the blurry 27 Sep one. "Dew" means the air comes within 2 °C of its dew point. '
             'DMI and MetNo repeat ECMWF after about 2.5 days, so they are left out beyond that. Forecasts: Open-Meteo.</p>'
             '</section>')
