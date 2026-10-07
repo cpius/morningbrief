@@ -46,8 +46,8 @@ def price_24h_ago(asset):
 
 # ---- fetch ---------------------------------------------------------------
 positions = get(f'https://data-api.polymarket.com/positions?user={WALLET}&limit=500&sizeThreshold=0.1')
-activity = [a for a in get(f'https://data-api.polymarket.com/activity?user={WALLET}&limit=500')
-            if a['timestamp'] >= T0]
+activity_all = get(f'https://data-api.polymarket.com/activity?user={WALLET}&limit=500')
+activity = [a for a in activity_all if a['timestamp'] >= T0]
 
 flows = defaultdict(lambda: dict(buy_sh=0.0, buy_cash=0.0, sell_sh=0.0, sell_cash=0.0))
 meta = {}
@@ -170,10 +170,13 @@ def spark(series, now, p24):
     y = lambda p: pad + (hi - p) / (hi - lo) * (H - 2 * pad)
     line = ' '.join(f"{x(t):.1f},{y(p):.1f}" for t, p in pts)
     b = y(p24 if p24 is not None else now)
+    # data-t/data-p feed the hover readout (HOVER_JS); one entry per polyline point.
     return (f'<svg class="spark {tone(now - (p24 if p24 is not None else now))}" viewBox="0 0 {W} {H}" '
-            f'width="{W}" height="{H}" role="img" aria-label="24h price, {cents(lo)} to {cents(hi)}">'
+            f'width="{W}" height="{H}" role="img" aria-label="24h price, {cents(lo)} to {cents(hi)}" '
+            f'data-t="{" ".join(str(t) for t, _ in pts)}" data-p="{" ".join(f"{p:g}" for _, p in pts)}">'
             f'<line x1="0" x2="{W}" y1="{b:.1f}" y2="{b:.1f}" class="base"/>'
-            f'<polyline points="{line}"/><circle cx="{x(NOW):.1f}" cy="{y(now):.1f}" r="2"/></svg>')
+            f'<polyline points="{line}"/><circle cx="{x(NOW):.1f}" cy="{y(now):.1f}" r="2"/>'
+            f'<g class="hover"><line y1="0" y2="{H}"/><circle r="2.5"/></g></svg>')
 
 
 def why(r):
@@ -413,6 +416,67 @@ def weather_section():
             '</section>')
 
 
+TRADE_DAYS = 7
+
+
+def recent_trades():
+    """Fills from the last TRADE_DAYS days, grouped by market, side and price so a limit order's fills read as one line."""
+    groups = {}
+    for a in activity_all:
+        if a['type'] != 'TRADE' or a['timestamp'] < NOW - TRADE_DAYS * 86400:
+            continue
+        g = groups.setdefault((a['asset'], a['side'], round(a['price'], 4)), dict(a, shares=0.0, cash=0.0, fills=0, t0=a['timestamp'], t1=a['timestamp']))
+        g['shares'] += a['size']; g['cash'] += a['usdcSize']; g['fills'] += 1
+        g['t0'] = min(g['t0'], a['timestamp']); g['t1'] = max(g['t1'], a['timestamp'])
+    now_by_asset = {r['asset']: r['now'] for r in rows}
+    out = []
+    for g in sorted(groups.values(), key=lambda g: -g['t1']):
+        now = now_by_asset.get(g['asset'])
+        if now is None:
+            now = price_24h_ago(g['asset'])[1]
+        g['now'] = now
+        if now is not None:
+            sgn = 1 if g['side'] == 'BUY' else -1
+            g['move'] = (now - g['price']) * 100
+            g['since'] = sgn * (now - g['price']) * g['shares']  # buys: gain since the fill; sells: gain vs still holding
+        out.append(g)
+    return out
+
+
+def trades_section(trades):
+    if not trades:
+        return ''
+    when = lambda t: f"{datetime.datetime.fromtimestamp(t):%a %d %b %H:%M}"
+    trs = []
+    for g in trades:
+        verb = 'Bought' if g['side'] == 'BUY' else 'Sold'
+        span = when(g['t1']) if g['t1'] - g['t0'] < 600 else f"{when(g['t0'])} – {when(g['t1'])}"
+        fills = f"{g['fills']} fills" if g['fills'] > 1 else '1 fill'
+        link = f"https://polymarket.com/event/{html.escape(g['eventSlug'])}" if g.get('eventSlug') else '#'
+        if g['now'] is None:
+            now_cell = '<td class="num faint">no price</td><td class="num faint">–</td>'
+        else:
+            m = g['move']
+            now_cell = (f'<td class="num"><b>{cents(g["now"])}</b><div class="sub {tone(m)}">'
+                        f'{"+" if m > 0.05 else "−" if m < -0.05 else "±"}{abs(m):.1f}¢ since fill</div></td>'
+                        f'<td class="num"><b class="{tone(g["since"])}">{usd(g["since"], True)}</b>'
+                        f'<div class="sub">{"vs holding" if g["side"] == "SELL" else "on these shares"}</div></td>')
+        trs.append(f'''<tr>
+  <td class="mkt"><a href="{link}">{html.escape(g['title'])}</a><div class="meta">{side(g['outcome'])}<span>{span}</span></div></td>
+  <td class="num"><b>{verb} {g['shares']:,.2f}</b> at {cents(g['price'])}<div class="sub">{usd(g['cash'])} · {fills}</div></td>
+  {now_cell}
+</tr>''')
+        print(f"  trade: {when(g['t1'])} {verb} {g['shares']:,.2f} {g['outcome']} {short(g['title'])} at {cents(g['price'])}"
+              f" ({fills}), now {cents(g['now']) if g['now'] is not None else '?'}")
+    return (f'<section class="trades"><h2>Trades, last {TRADE_DAYS} days</h2>'
+            '<div class="table-box"><table><thead><tr><th>Market</th><th>Filled</th><th>Now</th><th>Since fill</th></tr></thead>'
+            f'<tbody>{"".join(trs)}</tbody></table></div>'
+            '<p class="wx-note">Fills at the same price on the same market are grouped, so a limit order that filled in pieces shows as one line. '
+            '"Since fill" is the mark-to-market change on those shares at today\'s price; for a sale, it is what selling gained or lost against holding.</p>'
+            '</section>')
+
+
+trades_html = trades_section(recent_trades())
 weather_html = weather_section()
 
 lower = []
@@ -422,6 +486,40 @@ if closed:
 value_sub = f"{len(open_rows)} open positions"
 if redeem_value > 0.005:
     value_sub += f" · +{usd(redeem_value)} to redeem"
+
+# Hover readout for the 24h charts: time (Copenhagen), price and change since 24h ago at the nearest point.
+HOVER_JS = r"""<div id="spark-tip" hidden></div>
+<script>
+(() => {
+  const tip = document.getElementById('spark-tip');
+  const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
+  const c = p => (p * 100).toFixed(2).replace(/\.?0+$/, '') + '¢';
+  document.querySelectorAll('svg.spark[data-t]').forEach(svg => {
+    const ts = svg.dataset.t.split(' ').map(Number), ps = svg.dataset.p.split(' ').map(Number);
+    const xy = svg.querySelector('polyline').getAttribute('points').split(' ').map(s => s.split(',').map(Number));
+    const W = svg.viewBox.baseVal.width, line = svg.querySelector('.hover line'), dot = svg.querySelector('.hover circle');
+    const show = e => {
+      const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W;
+      let i = 0;
+      for (let j = 1; j < xy.length; j++) if (Math.abs(xy[j][0] - x) < Math.abs(xy[i][0] - x)) i = j;
+      const [px, py] = xy[i], d = (ps[i] - ps[0]) * 100;
+      line.setAttribute('x1', px); line.setAttribute('x2', px);
+      dot.setAttribute('cx', px); dot.setAttribute('cy', py);
+      svg.classList.add('on');
+      const sign = Math.abs(d) < 0.05 ? '±' : d > 0 ? '+' : '−';
+      tip.innerHTML = `<span class="t">${when.format(ts[i] * 1000)}</span>${c(ps[i])} <span class="${d > 0.05 ? 'up' : d < -0.05 ? 'down' : 'flat'}">${sign}${Math.abs(d).toFixed(1)}¢</span>`;
+      tip.style.left = (r.left + px / W * r.width) + 'px';
+      tip.style.top = r.top + 'px';
+      tip.hidden = false;
+    };
+    svg.addEventListener('pointermove', show);
+    svg.addEventListener('pointerdown', show);
+    svg.addEventListener('pointerleave', () => { svg.classList.remove('on'); tip.hidden = true; });
+  });
+  addEventListener('scroll', () => { tip.hidden = true; document.querySelectorAll('svg.spark.on').forEach(s => s.classList.remove('on')); }, { passive: true });
+})();
+</script>"""
+
 
 page = f'''<title>Nothing Ever Happens Book</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -513,6 +611,13 @@ td.chart {{ width: 140px; }}
 .spark circle {{ fill: currentColor; }}
 .spark .base {{ stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }}
 .spark.flat {{ color: var(--faint); }}
+.spark {{ cursor: crosshair; touch-action: pan-y; }}
+.spark .hover {{ visibility: hidden; }}
+.spark.on .hover {{ visibility: visible; }}
+.spark .hover line {{ stroke: var(--muted); stroke-width: 1; }}
+.spark .hover circle {{ fill: var(--surface); stroke: currentColor; stroke-width: 1.6; }}
+#spark-tip {{ position: fixed; z-index: 10; pointer-events: none; transform: translate(-50%, calc(-100% - 10px)); background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: 0 2px 8px rgb(0 0 0 / .12); }}
+#spark-tip .t {{ color: var(--muted); margin-right: 6px; }}
 tr.why td {{ padding: 0 16px 16px 20px; }}
 tr:has(+ tr.why) td {{ border-bottom: 0; }}
 tbody tr.why:hover td {{ background: transparent; }}
@@ -535,6 +640,9 @@ table.wx td {{ padding: 10px 14px; vertical-align: middle; }}
 td.cc {{ background: color-mix(in srgb, var(--faint) calc(var(--c) * 0.35%), transparent); }}
 td.faint {{ color: var(--faint); }}
 .verdict {{ font-weight: 600; font-size: 13.5px; white-space: nowrap; }}
+.trades {{ min-width: 0; }}
+.trades table {{ min-width: 640px; }}
+.trades .wx-note {{ margin: 10px 0 0; }}
 .lower {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 32px; }}
 h2 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
 ul {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }}
@@ -588,11 +696,14 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
     </table>
   </div>
 
+  {trades_html}
+
   {weather_html}
 
   {f'<div class="lower">{"".join(lower)}</div>' if lower else ''}
 
 </div>
+{HOVER_JS}
 '''
 
 with open(OUT, 'w') as fh:
