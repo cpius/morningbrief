@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy site/index.html to the Vercel project as a production deployment.
+"""Deploy site/index.html (and site/brief.mp3, when podcast.py made one) to the Vercel project as a production deployment.
 
 Sends no token itself: in the cloud routine, the environment's "Vercel API Token" credential
 adds the Authorization header to requests for api.vercel.com. Uses curl so the request goes
@@ -8,7 +8,7 @@ through the sandbox proxy that injects it.
     python3 deploy.py              # deploy (cloud)
     python3 deploy.py --body-only  # print the request body, e.g. for `vercel api ... --input -` locally
 """
-import json, os, subprocess, sys, time
+import base64, json, os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEAM = 'team_45ZNkd6F5HMXNUu6jGjrKr44'      # OxeanX
@@ -18,6 +18,10 @@ API = 'https://api.vercel.com'
 with open(os.path.join(HERE, 'site', 'index.html')) as fh:
     body = {'name': 'nothing-ever-happens-book', 'project': PROJECT, 'target': 'production',
             'files': [{'file': 'index.html', 'data': fh.read()}], 'projectSettings': {'framework': None}}
+mp3 = os.path.join(HERE, 'site', 'brief.mp3')
+if os.path.exists(mp3):
+    with open(mp3, 'rb') as fh:
+        body['files'].append({'file': 'brief.mp3', 'encoding': 'base64', 'data': base64.b64encode(fh.read()).decode()})
 
 if '--body-only' in sys.argv:
     print(json.dumps(body))

@@ -1,7 +1,8 @@
-# build output
+# build output (podcast.json is written fresh by each routine run)
 portfolio.html
 site/
 .vercel/
 # secrets never go in this repo
 .env*
 __pycache__/
+podcast.json

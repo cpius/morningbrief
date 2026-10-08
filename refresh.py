@@ -4,7 +4,7 @@
 Fetches live positions and the last 24h of wallet activity, computes a
 trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 """
-import datetime, html, json, os, time, urllib.error, urllib.request
+import datetime, hashlib, html, json, os, time, urllib.error, urllib.request
 from collections import defaultdict
 
 os.environ['TZ'] = 'Europe/Copenhagen'  # cloud runners are on UTC; all times on the page are Copenhagen
@@ -14,6 +14,7 @@ WALLET = '0x9d4a9ff98bdce01ff8081362f676749db0c85887'
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'portfolio.html')
 RESEARCH = os.path.join(HERE, 'research.json')  # "why it moved" notes, keyed by asset id
+PODCAST = os.path.join(HERE, 'podcast.json')  # spoken script for the "Listen" recording; podcast.py makes the MP3
 MAX_MOVE = 3.0  # cents; full width of the 24h bar
 SIG_MOVE = 2.0  # cents; a position needs research when its price moves this much ...
 SIG_USD = 10.0  # ... or its 24h $ change is at least this
@@ -709,16 +710,42 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
 with open(OUT, 'w') as fh:
     fh.write(page)
 
+# "Listen" button for today's spoken brief, shown only when site/brief.mp3 was made from today's script.
+try:
+    with open(PODCAST) as fh:
+        podcast = json.load(fh)
+except FileNotFoundError:
+    podcast = {}
+pod_audio = podcast.get('audio', {})
+if podcast.get('as_of') != f"{TODAY:%Y-%m-%d}":
+    pod_state = 'MISSING'
+elif (pod_audio.get('sha1') != hashlib.sha1(podcast['script'].encode()).hexdigest()
+      or not os.path.exists(os.path.join(HERE, 'site', 'brief.mp3'))):
+    pod_state = 'NO AUDIO'
+else:
+    pod_state = 'ok'
+if pod_state == 'ok':
+    secs = pod_audio['seconds']
+    LISTEN_BTN = f'<button type="button" id="listen-play">▶ Listen to today\'s brief · {secs // 60}:{secs % 60:02d}</button>'
+    LISTEN_AUDIO = f'<audio id="listen-audio" controls preload="none" hidden src="brief.mp3?v={pod_audio["sha1"][:10]}"></audio>'
+else:
+    LISTEN_BTN = LISTEN_AUDIO = ''
+
 # "The Morning Report" button, Vercel site only (the artifact sandbox may block YouTube frames).
 # Plays the first seconds of the licensed YouTube upload in YouTube's own player; nothing is hosted here.
 BRIEF_VIDEO, BRIEF_END = 'J0CASZfnVS8', 20
 BRIEF = f"""<div class="brief">
-        <button type="button" id="brief-play">▶ The Morning Report</button>
+        <div class="brief-btns">{LISTEN_BTN}<button type="button" id="brief-play">▶ The Morning Report</button></div>
+        {LISTEN_AUDIO}
         <div id="brief-player" hidden><div class="brief-frame"></div><button type="button" id="brief-close" aria-label="Close player">×</button></div>
       </div>
       <style>
       .brief {{ margin-top: 12px; display: grid; gap: 10px; justify-items: start; }}
-      #brief-play {{ font: 600 13px var(--body); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 999px; padding: 5px 14px; cursor: pointer; }}
+      .brief-btns {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+      #listen-audio {{ width: 356px; max-width: calc(100vw - 32px); height: 40px; }}
+      #brief-play, #listen-play {{ font: 600 13px var(--body); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 999px; padding: 5px 14px; cursor: pointer; }}
+      #listen-play {{ color: var(--ground); background: var(--accent); border-color: var(--accent); }}
+      #listen-play:hover {{ background: color-mix(in srgb, var(--accent) 85%, var(--ink)); }}
       #brief-play:hover {{ background: color-mix(in srgb, var(--accent) 18%, transparent); }}
       #brief-player {{ position: relative; }}
       #brief-player iframe {{ display: block; width: 356px; max-width: calc(100vw - 32px); aspect-ratio: 356 / 200; border: 0; border-radius: 8px; }}
@@ -732,6 +759,13 @@ BRIEF = f"""<div class="brief">
           box.hidden = false;
         }});
         document.getElementById('brief-close').addEventListener('click', () => {{ frame.innerHTML = ''; box.hidden = true; }});
+        const listen = document.getElementById('listen-play'), audio = document.getElementById('listen-audio');
+        if (listen) {{
+          const label = listen.textContent.slice(2);
+          listen.addEventListener('click', () => {{ audio.hidden = false; audio.paused ? audio.play() : audio.pause(); }});
+          audio.addEventListener('play', () => {{ listen.textContent = '❚❚ ' + label; }});
+          audio.addEventListener('pause', () => {{ listen.textContent = '▶ ' + label; }});
+        }}
       }})();
       </script>"""
 
@@ -759,5 +793,6 @@ for r in open_rows + closed:
     if r['sig']:
         state = 'ok' if research.get(r['asset'], {}).get('as_of', '') >= f"{WIN:%Y-%m-%d}" else 'MISSING'
         print(f"  research {state}: {r['asset']}  {r['title']} {r['outcome']} {r['move']:+.1f}¢ {usd(r['d24'], True)}")
+print(f"  podcast {pod_state}: {podcast.get('as_of', 'no podcast.json')}")
 for r in open_rows:
     print(f"  {r['title'][:50]:50} {r['outcome']:3} {cents(r['p24'] if r['p24'] is not None else r['now']):>7} -> {cents(r['now']):>7}  24h {usd(r['d24'], True):>9}  value {usd(r['value']):>9}")
