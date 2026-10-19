@@ -12,7 +12,8 @@ time.tzset()
 
 WALLET = '0x9d4a9ff98bdce01ff8081362f676749db0c85887'
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, 'portfolio.html')
+OUT_DIR = os.environ.get('MORNINGBRIEF_OUT', HERE)  # the refresh function writes to /tmp; its bundle is read-only
+OUT = os.path.join(OUT_DIR, 'portfolio.html')
 RESEARCH = os.path.join(HERE, 'research.json')  # "why it moved" notes, keyed by asset id
 MAX_MOVE = 3.0  # cents; full width of the 24h bar
 SIG_MOVE = 2.0  # cents; a position needs research when its price moves this much ...
@@ -278,6 +279,9 @@ def saturn_window(d):
 
 
 RETRY_WAITS = (5, 10, 20, 40, 60, 90)  # about 4 in 10 TLS handshakes from cloud IPs fail at random
+WEATHER_TIMEOUT = 90
+if os.environ.get('MORNINGBRIEF_QUICK'):  # the refresh button can't wait minutes; weather is skipped instead
+    RETRY_WAITS, WEATHER_TIMEOUT = (3, 6, 12), 25
 
 
 def retryable(e):
@@ -288,7 +292,7 @@ def get_patiently(url):
     """Open-Meteo rate-limits shared cloud IPs (429) and the multi-model call can be slow: back off and retry."""
     for wait in (*RETRY_WAITS, None):
         try:
-            return get(url, timeout=90)
+            return get(url, timeout=WEATHER_TIMEOUT)
         except Exception as e:
             if wait is None or not retryable(e):
                 raise
@@ -735,17 +739,65 @@ BRIEF = f"""<div class="brief">
       }})();
       </script>"""
 
+# On-demand refresh, Vercel site only: POST /api/refresh (api/refresh.py) reruns this script and redeploys.
+# The server enforces the 5-minute cooldown; the button just mirrors it and stays hidden until the
+# function says it is configured.
+REFRESH = f"""<div class="refresh" id="refresh" hidden>
+        <button type="button" id="refresh-btn" disabled>↻ Refresh now</button>
+        <span id="refresh-msg" role="status"></span>
+      </div>
+      <style>
+      .refresh {{ margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+      .refresh[hidden] {{ display: none; }}
+      #refresh-btn {{ font: 600 13px var(--body); color: var(--ink); background: var(--surface); border: 1px solid var(--rule); border-radius: 999px; padding: 5px 14px; cursor: pointer; }}
+      #refresh-btn:hover:not(:disabled) {{ border-color: var(--accent); color: var(--accent); }}
+      #refresh-btn:disabled {{ color: var(--faint); cursor: default; }}
+      #refresh-msg {{ font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }}
+      </style>
+      <script>
+      (() => {{
+        const box = document.getElementById('refresh'), btn = document.getElementById('refresh-btn'),
+              msg = document.getElementById('refresh-msg');
+        let next = {NOW + 300}, offset = 0, busy = false, timer;
+        const tick = () => {{
+          if (busy) return;
+          const left = Math.ceil(next - (Date.now() / 1000 + offset));
+          btn.disabled = left > 0;
+          msg.textContent = left > 0 ? `available in ${{Math.floor(left / 60)}}:${{String(left % 60).padStart(2, '0')}}` : '';
+        }};
+        const sync = async () => {{
+          try {{
+            const s = await (await fetch('/api/refresh', {{ cache: 'no-store' }})).json();
+            if (!s.configured) return;
+            next = Math.max(next, s.next_allowed); offset = s.now - Date.now() / 1000;
+            box.hidden = false; tick(); clearInterval(timer); timer = setInterval(tick, 1000);
+          }} catch (e) {{}}
+        }};
+        btn.addEventListener('click', async () => {{
+          busy = true; btn.disabled = true; msg.textContent = 'Refreshing… (about a minute)';
+          try {{
+            const r = await fetch('/api/refresh', {{ method: 'POST' }}), j = await r.json();
+            if (r.ok) {{ msg.textContent = 'Done, reloading…'; location.reload(); return; }}
+            msg.textContent = j.error || `failed (${{r.status}})`;
+            if (j.next_allowed) next = j.next_allowed;
+          }} catch (e) {{ msg.textContent = 'failed: ' + e.message; }}
+          setTimeout(() => {{ busy = false; tick(); }}, 4000);
+        }});
+        sync();
+      }})();
+      </script>"""
+
 # Standalone copy for the Vercel site; the artifact adds this document skeleton itself.
 # Favicon: a smug blue hornbill on a rising-sun badge, a nod to Zazu giving the Morning Report.
 FAVICON = ("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='31' fill='%23ffcf6a'/><clipPath id='k'><circle cx='32' cy='32' r='31'/></clipPath><rect x='0' y='44' width='64' height='20' fill='%23f29a3a' clip-path='url(%23k)'/><path d='M11 22C6 19 6 12 10 11C10 15 13 17 15.5 18C13 13 15 7 19 8C18 12 19.5 15 22 16Z' fill='%231f4fa8'/><circle cx='23' cy='35' r='17' fill='%232f6fd6'/><path d='M24 51C29 51.5 35 48.5 37 43C32 45 27 46 22 45Z' fill='%237fa9ea'/><path d='M32 23C45 19 57 24 61.5 32C53 31.5 44 32.5 35.5 34.5Z' fill='%23e8661a'/><path d='M32 23C42 20.5 51 22.5 56 27C48 26 41 26.5 34 28.5Z' fill='%23ffe08a'/><path d='M35.5 34.5C44 32.5 52 32 58 33C52 40 43 42 35 40.5Z' fill='%23b8441a'/><path d='M37 35.6C34.5 38.6 31 38.6 29.3 36' stroke='%230f2c66' stroke-width='1.9' fill='none' stroke-linecap='round'/><ellipse cx='27.5' cy='30' rx='5.8' ry='6' fill='%23fff'/><circle cx='30' cy='31' r='2.8' fill='%23111'/><circle cx='31' cy='30' r='.9' fill='%23fff'/><path d='M21 31C20.5 21.5 34.5 21.5 34 31C29.5 28.6 25 28.8 21 31Z' fill='%231f4fa8'/><path d='M21 30.8C25 28.4 29.5 28.2 34 30.3' stroke='%230f2c66' stroke-width='1.8' fill='none' stroke-linecap='round'/><path d='M21.5 33.8Q27.5 31.8 33.5 33.8L33.5 37L21.5 37Z' fill='%232f6fd6'/><path d='M22.5 21.5C25.5 17.5 31 17.8 33.5 20.5' stroke='%230f2c66' stroke-width='2' fill='none' stroke-linecap='round'/></svg>")  # single quotes inside: it sits in a double-quoted href
-os.makedirs(os.path.join(HERE, 'site'), exist_ok=True)
-with open(os.path.join(HERE, 'site', 'index.html'), 'w') as fh:
+os.makedirs(os.path.join(OUT_DIR, 'site'), exist_ok=True)
+with open(os.path.join(OUT_DIR, 'site', 'index.html'), 'w') as fh:
     fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'
              '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
              '<meta name="robots" content="noindex">\n'
              f'<link rel="icon" type="image/svg+xml" href="{FAVICON}">\n'
              '<style>body { margin: 0; }</style>\n'
-             f"{page.replace('<!--BRIEF-->', BRIEF)}\n</html>\n")
+             f"{page.replace('<!--BRIEF-->', BRIEF + REFRESH)}\n</html>\n")
 
 print(f"wrote {OUT}")
 print(f"snapshot {SNAP:%Y-%m-%d %H:%M}  value {usd(tot_value)}  pnl {usd(tot_pnl, True)}  24h {usd(d24_all, True)} "
