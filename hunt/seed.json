@@ -3222,8 +3222,8 @@
    "name": "Sweden snap election called in 2026",
    "url": "https://polymarket.com/event/sweden-snap-election-called-in-2026",
    "end": "2027-01-01",
-   "fair": 0.84,
-   "why": "Four failed PM votes are needed before an extra election; only one has failed (Oct 15) and the second is Nov 3. The Election Authority began contingency planning Oct 28, but the Speaker is consulting before a third vote and nothing is called.",
+   "fair": 0.9,
+   "why": "Deep dive 31 Oct: YES needs three more failed PM votes and the Speaker formally setting a date by 31 Dec (Vallagen 1:3); the government route is closed (caretaker since 17 Sep, and no government may order one before ~28 Dec). Norlén says he'll be 'lite varsam' with vote 3, and in 2018 he refused a pre-Christmas vote. Seats 176 red-green v 173 Tidö. ~10% YES vs market 19.5%.",
    "tag": "",
    "added": "2026-10-31",
    "origin": "position",
@@ -3240,7 +3240,7 @@
    "bid": 0.76,
    "depth": 168,
    "priced": "2026-10-31 11:24",
-   "reviewed": "2026-10-31",
+   "reviewed": "2026-10-31T16:00",
    "prev_bid": null
   },
   {
