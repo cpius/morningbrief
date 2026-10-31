@@ -7,6 +7,8 @@ trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 import datetime, html, json, os, time, urllib.error, urllib.request
 from collections import defaultdict
 
+from favicon import FAVICON
+
 os.environ['TZ'] = 'Europe/Copenhagen'  # cloud runners are on UTC; all times on the page are Copenhagen
 time.tzset()
 
@@ -207,6 +209,37 @@ closed_d24 = sum(r['d24'] for r in closed) + sum(r['d24'] for r in resolved)
 d24_all = tot_d24 + closed_d24
 redeem_value = sum(r['value'] for r in resolved)
 
+HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build
+
+
+def load_hunt():
+    try:
+        with open(HUNT) as fh:
+            h = json.load(fh)
+    except (OSError, ValueError):
+        print('  hunt: no summary, hunt parts left out')
+        return None
+    if h.get('day') != f'{TODAY}':
+        print(f"  hunt: summary is from {h.get('day')}, hunt parts left out")
+        return None
+    return h
+
+
+hunt = load_hunt()
+
+
+def fair_chip(r):
+    """This position's fair value and hold-vs-sell from today's hunt."""
+    v = ((hunt or {}).get('positions') or {}).get(r['asset'])
+    if not v or v.get('fair') is None:
+        return ''
+    if v.get('tot') is None:
+        return f'<a class="fair" href="hunt/#positions">fair {cents(v["fair"])}</a>'
+    t = v['tot']
+    tone_cls = 'down' if t < 0 else 'up' if t >= 0.02 else ''
+    return f'<a class="fair {tone_cls}" href="hunt/#positions">fair {cents(v["fair"])} · hold vs sell {t * 100:+.1f}%</a>'
+
+
 trs = []
 for r in open_rows:
     f = r['flows']
@@ -220,7 +253,7 @@ for r in open_rows:
     trs.append(f'''
 <tr>
   <td class="mkt"><a href="{link}">{html.escape(r['title'])}</a>
-    <div class="meta">{side(r['outcome'])}<span>{usd(r['traded'])} traded</span>{end_chip(r['end'])}</div></td>
+    <div class="meta">{side(r['outcome'])}<span>{usd(r['traded'])} traded</span>{end_chip(r['end'])}{fair_chip(r)}</div></td>
   <td class="num">{cents(r['avg'])}<span class="arrow">→</span><b>{cents(r['now'])}</b><div class="sub {tone(r['pnl'])}">{usd(r['pnl'], True)} ({r['pct']:+.1f}%)</div></td>
   <td class="chart">{spark(r['series'], r['now'], r['p24'])}</td>
   <td class="d24">
@@ -416,20 +449,11 @@ def weather_section():
             '</section>')
 
 
-HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build
-
-
 def hunt_section():
     """Teaser for the mispricing hunt page, if hunt/hunt.py rebuilt it today."""
-    try:
-        with open(HUNT) as fh:
-            h = json.load(fh)
-    except (OSError, ValueError):
-        print('  hunt: no summary, section left out')
+    if not hunt:
         return ''
-    if h.get('day') != f'{TODAY}':
-        print(f"  hunt: summary is from {h.get('day')}, section left out")
-        return ''
+    h = hunt
     items = ''.join(
         f'<li><a class="li-title" href="{html.escape(t["url"])}">{html.escape(t["name"])}</a>'
         f'<span class="li-body">{t["side"]} at <b>{t["ask"]:.3g}</b>, fair {t["fair"]:.2f}, '
@@ -437,8 +461,18 @@ def hunt_section():
         for t in h['top'])
     resolved = ''.join(f'<li><span class="li-title">{html.escape(r["name"])}</span><span class="li-body">Resolved: our '
                        f'{r["side"]} {"won" if r["won"] else "lost"}</span></li>' for r in h.get('resolved', []))
-    print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped")
-    return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>'
+    held = ''
+    if h.get('held'):
+        above = h.get('held_above') or []
+        held = (f'<p class="wx-note">Your {h["held"]} open positions are on the hunt page too, each with a fair value and '
+                f'"hold vs sell" (fair ÷ bid − 1). '
+                + (f'The bid is above my fair value on {len(above)}: {html.escape(", ".join(above))}. ' if above else
+                   'None has a bid above my fair value. ')
+                + (f'{h["held_unvalued"]} not valued yet. ' if h.get('held_unvalued') else '')
+                + '<a class="more" href="hunt/#positions">Your positions →</a></p>')
+    print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped; "
+          f"{h.get('held', 0)} positions, {len(h.get('held_above') or [])} with the bid above fair")
+    return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>{held}'
             f'<p class="wx-note">{h["main"]} picks with at least +10% upside, {h["hold"]} of them earning the 3.25% APR '
             f'holding reward; {h["new"]} new and {h["dropped"]} dropped today. Top five by return:</p>'
             f'<ul>{resolved}{items}</ul><p class="wx-note"><a class="more" href="hunt/">Open the full list →</a></p></section>')
@@ -672,6 +706,8 @@ td.faint {{ color: var(--faint); }}
 .hunt-teaser {{ display: grid; gap: 10px; }}
 .hunt-teaser h2 {{ margin: 0; }}
 .hunt-teaser .more {{ color: var(--accent); font-weight: 600; }}
+a.fair {{ font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 4px; border: 1px dashed var(--rule); }}
+a.fair.up {{ color: var(--up); }} a.fair.down {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }}
 .trades {{ min-width: 0; }}
 .trades table {{ min-width: 640px; }}
 .trades .wx-note {{ margin: 10px 0 0; }}
@@ -770,8 +806,6 @@ BRIEF = f"""<div class="brief">
       </script>"""
 
 # Standalone copy for the Vercel site; the artifact adds this document skeleton itself.
-# Favicon: a smug blue hornbill on a rising-sun badge, a nod to Zazu giving the Morning Report.
-FAVICON = ("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='31' fill='%23ffcf6a'/><clipPath id='k'><circle cx='32' cy='32' r='31'/></clipPath><rect x='0' y='44' width='64' height='20' fill='%23f29a3a' clip-path='url(%23k)'/><path d='M11 22C6 19 6 12 10 11C10 15 13 17 15.5 18C13 13 15 7 19 8C18 12 19.5 15 22 16Z' fill='%231f4fa8'/><circle cx='23' cy='35' r='17' fill='%232f6fd6'/><path d='M24 51C29 51.5 35 48.5 37 43C32 45 27 46 22 45Z' fill='%237fa9ea'/><path d='M32 23C45 19 57 24 61.5 32C53 31.5 44 32.5 35.5 34.5Z' fill='%23e8661a'/><path d='M32 23C42 20.5 51 22.5 56 27C48 26 41 26.5 34 28.5Z' fill='%23ffe08a'/><path d='M35.5 34.5C44 32.5 52 32 58 33C52 40 43 42 35 40.5Z' fill='%23b8441a'/><path d='M37 35.6C34.5 38.6 31 38.6 29.3 36' stroke='%230f2c66' stroke-width='1.9' fill='none' stroke-linecap='round'/><ellipse cx='27.5' cy='30' rx='5.8' ry='6' fill='%23fff'/><circle cx='30' cy='31' r='2.8' fill='%23111'/><circle cx='31' cy='30' r='.9' fill='%23fff'/><path d='M21 31C20.5 21.5 34.5 21.5 34 31C29.5 28.6 25 28.8 21 31Z' fill='%231f4fa8'/><path d='M21 30.8C25 28.4 29.5 28.2 34 30.3' stroke='%230f2c66' stroke-width='1.8' fill='none' stroke-linecap='round'/><path d='M21.5 33.8Q27.5 31.8 33.5 33.8L33.5 37L21.5 37Z' fill='%232f6fd6'/><path d='M22.5 21.5C25.5 17.5 31 17.8 33.5 20.5' stroke='%230f2c66' stroke-width='2' fill='none' stroke-linecap='round'/></svg>")  # single quotes inside: it sits in a double-quoted href
 os.makedirs(os.path.join(HERE, 'site'), exist_ok=True)
 with open(os.path.join(HERE, 'site', 'index.html'), 'w') as fh:
     fh.write('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">\n'
