@@ -32,6 +32,8 @@ from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+from favicon import FAVICON  # noqa: E402  (shared with the brief)
 WORK = os.path.join(HERE, 'work')
 STATE = os.path.join(WORK, 'state.json')
 WALLETS = os.path.join(WORK, 'wallets.json')
@@ -794,6 +796,7 @@ def render(st, main, extra, noask, held):
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="{FAVICON}">
 <title>Mispricing hunt · {TODAY:%-d %b %Y}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
