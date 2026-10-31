@@ -207,6 +207,37 @@ closed_d24 = sum(r['d24'] for r in closed) + sum(r['d24'] for r in resolved)
 d24_all = tot_d24 + closed_d24
 redeem_value = sum(r['value'] for r in resolved)
 
+HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build
+
+
+def load_hunt():
+    try:
+        with open(HUNT) as fh:
+            h = json.load(fh)
+    except (OSError, ValueError):
+        print('  hunt: no summary, hunt parts left out')
+        return None
+    if h.get('day') != f'{TODAY}':
+        print(f"  hunt: summary is from {h.get('day')}, hunt parts left out")
+        return None
+    return h
+
+
+hunt = load_hunt()
+
+
+def fair_chip(r):
+    """This position's fair value and hold-vs-sell from today's hunt."""
+    v = ((hunt or {}).get('positions') or {}).get(r['asset'])
+    if not v or v.get('fair') is None:
+        return ''
+    if v.get('tot') is None:
+        return f'<a class="fair" href="hunt/#positions">fair {cents(v["fair"])}</a>'
+    t = v['tot']
+    tone_cls = 'down' if t < 0 else 'up' if t >= 0.02 else ''
+    return f'<a class="fair {tone_cls}" href="hunt/#positions">fair {cents(v["fair"])} · hold vs sell {t * 100:+.1f}%</a>'
+
+
 trs = []
 for r in open_rows:
     f = r['flows']
@@ -220,7 +251,7 @@ for r in open_rows:
     trs.append(f'''
 <tr>
   <td class="mkt"><a href="{link}">{html.escape(r['title'])}</a>
-    <div class="meta">{side(r['outcome'])}<span>{usd(r['traded'])} traded</span>{end_chip(r['end'])}</div></td>
+    <div class="meta">{side(r['outcome'])}<span>{usd(r['traded'])} traded</span>{end_chip(r['end'])}{fair_chip(r)}</div></td>
   <td class="num">{cents(r['avg'])}<span class="arrow">→</span><b>{cents(r['now'])}</b><div class="sub {tone(r['pnl'])}">{usd(r['pnl'], True)} ({r['pct']:+.1f}%)</div></td>
   <td class="chart">{spark(r['series'], r['now'], r['p24'])}</td>
   <td class="d24">
@@ -416,20 +447,11 @@ def weather_section():
             '</section>')
 
 
-HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build
-
-
 def hunt_section():
     """Teaser for the mispricing hunt page, if hunt/hunt.py rebuilt it today."""
-    try:
-        with open(HUNT) as fh:
-            h = json.load(fh)
-    except (OSError, ValueError):
-        print('  hunt: no summary, section left out')
+    if not hunt:
         return ''
-    if h.get('day') != f'{TODAY}':
-        print(f"  hunt: summary is from {h.get('day')}, section left out")
-        return ''
+    h = hunt
     items = ''.join(
         f'<li><a class="li-title" href="{html.escape(t["url"])}">{html.escape(t["name"])}</a>'
         f'<span class="li-body">{t["side"]} at <b>{t["ask"]:.3g}</b>, fair {t["fair"]:.2f}, '
@@ -437,8 +459,18 @@ def hunt_section():
         for t in h['top'])
     resolved = ''.join(f'<li><span class="li-title">{html.escape(r["name"])}</span><span class="li-body">Resolved: our '
                        f'{r["side"]} {"won" if r["won"] else "lost"}</span></li>' for r in h.get('resolved', []))
-    print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped")
-    return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>'
+    held = ''
+    if h.get('held'):
+        above = h.get('held_above') or []
+        held = (f'<p class="wx-note">Your {h["held"]} open positions are on the hunt page too, each with a fair value and '
+                f'"hold vs sell" (fair ÷ bid − 1). '
+                + (f'The bid is above my fair value on {len(above)}: {html.escape(", ".join(above))}. ' if above else
+                   'None has a bid above my fair value. ')
+                + (f'{h["held_unvalued"]} not valued yet. ' if h.get('held_unvalued') else '')
+                + '<a class="more" href="hunt/#positions">Your positions →</a></p>')
+    print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped; "
+          f"{h.get('held', 0)} positions, {len(h.get('held_above') or [])} with the bid above fair")
+    return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>{held}'
             f'<p class="wx-note">{h["main"]} picks with at least +10% upside, {h["hold"]} of them earning the 3.25% APR '
             f'holding reward; {h["new"]} new and {h["dropped"]} dropped today. Top five by return:</p>'
             f'<ul>{resolved}{items}</ul><p class="wx-note"><a class="more" href="hunt/">Open the full list →</a></p></section>')
@@ -672,6 +704,8 @@ td.faint {{ color: var(--faint); }}
 .hunt-teaser {{ display: grid; gap: 10px; }}
 .hunt-teaser h2 {{ margin: 0; }}
 .hunt-teaser .more {{ color: var(--accent); font-weight: 600; }}
+a.fair {{ font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 4px; border: 1px dashed var(--rule); }}
+a.fair.up {{ color: var(--up); }} a.fair.down {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }}
 .trades {{ min-width: 0; }}
 .trades table {{ min-width: 640px; }}
 .trades .wx-note {{ margin: 10px 0 0; }}

@@ -35,5 +35,11 @@ event ids) and `site/hunt/wallets.json` (leaderboard PnL cache), `deploy.py` pub
 reads them back. A failed run therefore leaves the last good book in place. `hunt/seed.json` is the 30 Oct 2026
 book, used only when the live copy is missing. Working files go to `hunt/work/` (ignored).
 
+The wallet's open positions are part of the book. `scan` marks picks the wallet holds and adds any held market that
+is missing, without a fair value (`FAIR NEEDED` lines; value them with `set`). The page's "Your open positions" table
+shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. what holding to resolution should earn over
+selling into the bid now, and the $ edge (shares × (fair + reward − bid)). Held positions are never auto-dropped and
+leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
+
 Build drops picks whose return fell below +5% and moves resolved markets to "Resolved". The page prints well as
 A4 landscape (browser Print → PDF).

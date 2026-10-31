@@ -18,6 +18,11 @@ from the live site, so the cloud routine needs no git push. The repo copy hunt/s
     python3 hunt/hunt.py build                # write site/hunt/{index.html,state.json,wallets.json,summary.json}
 
 Return = fair / ask - 1, held to resolution, plus Polymarket's 3.25% APR holding reward where the market pays it.
+
+The wallet's open positions are part of the book too. `scan` marks picks the wallet holds and adds any held market
+that is missing, with no fair value yet (it prints FAIR NEEDED; set one with `set`). For a held position the page
+shows "hold vs sell": fair / best bid - 1 plus the reward, i.e. what holding to resolution should earn over selling
+into the bid now. Held positions are never auto-dropped; they leave the book when sold, unless they are also hunt picks.
 Only the standard library is used.
 """
 import argparse, datetime, html, json, os, re, sys, threading, time, urllib.error, urllib.request
@@ -40,6 +45,7 @@ UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit
 
 NOW = datetime.datetime.now(ZoneInfo('Europe/Copenhagen'))
 TODAY = NOW.date()
+WALLET = '0x9d4a9ff98bdce01ff8081362f676749db0c85887'  # mdorup
 HOLD_APR = 0.0325       # Polymarket holding reward, variable at their discretion
 MAIN_EDGE = 0.10        # main list
 MIN_EDGE = 0.05         # appendix; below this a pick is dropped at build
@@ -108,14 +114,27 @@ def find(st, pid):
 
 
 def econ(p):
-    """Return math for one pick at today's ask, or None without an ask."""
-    if not p.get('ask'):
+    """Return math for one pick at today's ask, or None without an ask or a fair value."""
+    if not p.get('ask') or p.get('fair') is None:
         return None
     yrs = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1) / 365
     ret = p['fair'] / p['ask'] - 1
     bonus = HOLD_APR * yrs * ((p['ask'] + p['fair']) / 2) / p['ask'] if p.get('hold') else 0.0
     tot = ret + bonus
     return dict(yrs=yrs, ret=ret, bonus=bonus, tot=tot, ann=tot / yrs)
+
+
+def hold_econ(p):
+    """For a held position: holding to resolution vs selling into today's best bid (per share and in $)."""
+    h = p.get('held')
+    if not h or p.get('fair') is None or not p.get('bid'):
+        return None
+    yrs = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1) / 365
+    bid, fair = p['bid'], p['fair']
+    reward = HOLD_APR * yrs * (bid + fair) / 2 if p.get('hold') else 0.0  # per share, on the mid value
+    tot = (fair + reward) / bid - 1
+    return dict(yrs=yrs, tot=tot, bonus=reward / bid, ann=tot / yrs, edge=h['size'] * (fair + reward - bid),
+                value=h['size'] * bid)
 
 
 def book(token):
@@ -160,7 +179,7 @@ def cmd_pull(a):
         wallets = read(SEED_WALLETS)
     if st.get('day') != str(TODAY):  # first run today: last run's prices become the "previous" column
         for p in st['picks']:
-            p['prev_ask'], p['prev_fair'] = p.get('ask'), p['fair']
+            p['prev_ask'], p['prev_bid'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('fair')
         st.update(prev_day=st.get('day'), day=str(TODAY), notes=[], dropped=[], resolved=[])
     write(STATE, st)
     write(WALLETS, wallets, indent=None)
@@ -229,6 +248,43 @@ def candidate_markets(e):
     return out
 
 
+def sync_positions(st):
+    """Mark the picks the wallet holds; add held markets missing from the book (fair value still to be set)."""
+    try:
+        pos = get(f'{DATA}/positions?user={WALLET}&limit=500&sizeThreshold=0.1')
+    except Exception as e:
+        print(f'positions unavailable ({e}); held marks left as they were')
+        return
+    pos = [x for x in pos if not x.get('redeemable') and 0 < float(x.get('curPrice') or 0) < 1]
+    by_token = {p['token']: p for p in st['picks']}
+    for x in pos:
+        held = dict(size=round(x['size'], 2), avg=x['avgPrice'], cost=round(x['initialValue'], 2))
+        if x['asset'] in by_token:
+            by_token[x['asset']]['held'] = held
+            continue
+        try:
+            m = get(f"{GAMMA}/markets?condition_ids={x['conditionId']}")[0]
+        except Exception as e:
+            print(f"positions: no Gamma market for {x['title']} ({e})")
+            continue
+        p = dict(id=m['id'], cid=x['conditionId'], token=x['asset'], side='YES' if x['outcomeIndex'] == 0 else 'NO',
+                 outcome=x['outcome'], event=str(x.get('eventId') or ''), q=m['question'], name=x['title'].rstrip('?'),
+                 url=f"https://polymarket.com/event/{x['eventSlug']}", end=(m.get('endDate') or x.get('endDate') or '')[:10],
+                 fair=None, why='', tag='', added=str(TODAY), origin='position', prev_ask=None, prev_fair=None, held=held)
+        p.update(reprice(p)[1])
+        p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
+        st['picks'].append(p)
+        print(f"HELD NEW {p['id']} {p['name']}: {p['outcome']} {held['size']:,.0f} sh @ {held['avg']:.3f}, added to the book")
+    live = {x['asset'] for x in pos}
+    for p in list(st['picks']):
+        if p.get('held') and p['token'] not in live and not p.get('closed'):
+            p['held'] = None
+            if p.get('origin') == 'position':
+                st['picks'].remove(p)
+            print(f"SOLD {p['id']} {p['name']}: no longer held"
+                  f"{', removed from the book' if p.get('origin') == 'position' else ', stays in the hunt'}")
+
+
 def cmd_scan(a):
     st = load()
     picks = st['picks']
@@ -242,6 +298,8 @@ def cmd_scan(a):
         p.pop('err', None)
         p.update(r)
         p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
+    sync_positions(st)
+    picks = st['picks']
     write(STATE, st)
 
     print(f'sweeping {len(TAGS)} tags ...', flush=True)
@@ -277,7 +335,12 @@ def cmd_scan(a):
         if p.get('closed'):
             print(f"RESOLVED {p['id']} {p['name']}: our {p['side']} {'won' if p['won'] else 'lost'} (moves to Resolved at build)")
     for p in picks:
-        if p.get('closed'):
+        if p.get('held') and p.get('fair') is None and not p.get('closed'):
+            h = p['held']
+            print(f"FAIR NEEDED {p['id']} {p['name']} | held {p.get('outcome') or p['side']} {h['size']:,.0f} sh @ {h['avg']:.3f}, "
+                  f"bid {px(p.get('bid'))} ask {px(p.get('ask'))}, ends {p['end']}")
+    for p in picks:
+        if p.get('closed') or p.get('fair') is None:
             continue
         why = []
         if p.get('err'):
@@ -290,13 +353,16 @@ def cmd_scan(a):
         if days <= SOON_DAYS:
             why.append(f'ends in {days}d')
         e = econ(p)
-        if e and e['tot'] < MIN_EDGE:
+        if e and e['tot'] < MIN_EDGE and not p.get('held'):
             why.append(f"edge gone ({e['tot'] * 100:+.0f}%), dropped at build unless the fair value changes")
+        if p.get('held') and p.get('bid') and p['bid'] > p['fair']:
+            why.append(f"held, bid {p['bid']:.3g} is above the fair value")
         if why:
             prev = f"{p['prev_ask']:.3g}→" if p.get('prev_ask') else ''
             ask = f"{p['ask']:.3g}" if p.get('ask') else '–'
             ret = f"{e['tot'] * 100:+.0f}%" if e else '–'
-            print(f"REVIEW {p['id']} [{'; '.join(why)}] {p['name']} | {p['side']} ask {prev}{ask} fair {p['fair']:.2f} return {ret}")
+            print(f"REVIEW {p['id']} [{'; '.join(why)}] {p['name']} | {p['side']} ask {prev}{ask} fair {p['fair']:.2f} return {ret}"
+                  f"{' | HELD' if p.get('held') else ''}")
     print(f'NEW {len(new)} new candidate events -> {os.path.relpath(CANDIDATES, ROOT)}')
 
 
@@ -307,8 +373,10 @@ def cmd_list(a):
     rows = sorted(st['picks'], key=lambda p: -(econ(p) or {'tot': -9})['tot'])
     for p in rows:
         e = econ(p)
-        print(f"{p['id']:>8} {p['side']:3} ask {p.get('ask') or '–':<6} fair {p['fair']:.3f} "
-              f"{(e['tot'] * 100 if e else 0):+5.0f}% {'APR ' if p.get('hold') else '    '}{p.get('tag') or '':14.14} {p['name']}")
+        fair = f"{p['fair']:.3f}" if p.get('fair') is not None else '  –  '
+        print(f"{p['id']:>8} {p['side']:3} ask {p.get('ask') or '–':<6} fair {fair} "
+              f"{(e['tot'] * 100 if e else 0):+5.0f}% {'APR ' if p.get('hold') else '    '}{'HELD ' if p.get('held') else '     '}"
+              f"{p.get('tag') or '':14.14} {p['name']}")
 
 
 def cmd_show(a):
@@ -351,6 +419,8 @@ def cmd_set(a):
 def cmd_drop(a):
     st = load()
     p = find(st, a.id)
+    if p.get('held'):
+        sys.exit(f"{p['name']} is a held position: it stays in the book while held (change its fair value with `set`)")
     st['picks'].remove(p)
     st['dropped'].append(dict(p, reason=a.reason))
     write(STATE, st)
@@ -483,22 +553,24 @@ def cmd_build(a):
             st['resolved'].append(p)
             continue
         e = econ(p)
-        if e and e['tot'] < MIN_EDGE:
+        if e and e['tot'] < MIN_EDGE and not p.get('held'):
             prev = f"{p['prev_ask']:.3g}→" if p.get('prev_ask') else ''
             st['dropped'].append(dict(p, reason=f"Edge gone: ask {prev}{p['ask']:.3g}, fair {p['fair']:.2f}"))
             continue
         keep.append(p)
     st['picks'] = keep
-    rows = [(p, econ(p)) for p in keep if econ(p)]
+    rows = [(p, econ(p)) for p in keep if econ(p) and econ(p)['tot'] >= MIN_EDGE]
     rows.sort(key=lambda r: -r[1]['tot'])
     main = [r for r in rows if r[1]['tot'] >= MAIN_EDGE]
     extra = [r for r in rows if r[1]['tot'] < MAIN_EDGE]
-    noask = [p for p in keep if not econ(p)]
+    noask = [p for p in keep if not econ(p) and not p.get('held')]
+    held = [(p, hold_econ(p)) for p in keep if p.get('held')]
+    held.sort(key=lambda r: (r[1] is None, r[1]['tot'] if r[1] else 0))  # bid above fair first, unvalued last
     st['built'] = NOW.isoformat(timespec='seconds')
 
     os.makedirs(SITE, exist_ok=True)
     with open(os.path.join(SITE, 'index.html'), 'w') as fh:
-        fh.write(render(st, main, extra, noask))
+        fh.write(render(st, main, extra, noask, held))
     write(STATE, st)
     write(os.path.join(SITE, 'state.json'), st)
     with open(WALLETS) as src, open(os.path.join(SITE, 'wallets.json'), 'w') as dst:
@@ -509,14 +581,27 @@ def cmd_build(a):
                    hold=sum(1 for p, _ in rows if p.get('hold')), dropped=len(st['dropped']),
                    new=sum(1 for p, _ in rows if p.get('added') == str(TODAY)),
                    top=[short(p, e) for p, e in main[:5]],
-                   resolved=[dict(name=p['name'], side=p['side'], won=p['won']) for p in st['resolved']],
-                   notes=st['notes'])
+                   resolved=[dict(name=p['name'], side=p['side'], won=p['won'], held=bool(p.get('held'))) for p in st['resolved']],
+                   notes=st['notes'],
+                   positions={p['token']: dict(fair=p['fair'], bid=p.get('bid'), tot=round(h['tot'], 4) if h else None,
+                                               edge=round(h['edge'], 2) if h else None, hold=bool(p.get('hold')))
+                              for p, h in held},
+                   held=len(held), held_above=[p['name'] for p, h in held if h and h['tot'] < 0],
+                   held_unvalued=sum(1 for p, _ in held if p.get('fair') is None),
+                   held_edge=round(sum(h['edge'] for _, h in held if h), 2))
     write(os.path.join(SITE, 'summary.json'), summary)
     print(f"built site/hunt/index.html: {len(main)} main, {len(extra)} appendix, {len(noask)} without an ask, "
           f"{summary['hold']} earn the APR reward, {summary['new']} new today, {len(st['dropped'])} dropped, "
           f"{len(st['resolved'])} resolved")
     for p, e in main[:10]:
         print(f"  {e['tot'] * 100:+4.0f}% {'APR ' if p.get('hold') else '    '}{p['side']} {p['ask']:.3g} fair {p['fair']:.2f}  {p['name']}")
+    print(f"positions: {len(held)} held, {len(summary['held_above'])} with the bid above fair, "
+          f"{summary['held_unvalued']} without a fair value, hold-vs-sell edge ${summary['held_edge']:+,.0f}")
+    for p, h in held:
+        fair = f"{p['fair']:.3f}" if p.get('fair') is not None else '–'
+        hvs = f"{h['tot'] * 100:+.1f}%" if h else '–'
+        print(f"  held {p['held']['size']:>8,.0f} {p.get('outcome') or p['side']:4} bid {px(p.get('bid')):>5} fair {fair:<5} "
+              f"hold vs sell {hvs:>7}  {p['name']}")
     for p in st['dropped']:
         print(f"  dropped: {p['name']}: {p['reason']}")
     for p in st['resolved']:
@@ -537,11 +622,34 @@ def px(x):
     return f'{x:.3g}' if x is not None else '–'
 
 
+def fv(x):
+    """A fair value: two decimals, three near the ends where the third one matters."""
+    return f'{x:.3f}' if x >= 0.95 or x <= 0.05 else f'{x:.2f}'
+
+
+def side_pill(p):
+    out = p.get('outcome') or p['side']
+    label = out.upper() if out.lower() in ('yes', 'no') else out
+    return f'<span class="side {p["side"].lower()}">{esc(label)}</span>'
+
+
+def smart_cell(p):
+    s = p.get('smart') or {}
+    if s.get('share') is None:
+        return '<span class="faint">–</span>'
+    v = s['share'] * 100
+    t = 'up' if v >= 60 else 'down' if v <= 40 else ''
+    tip = esc('Ours: ' + (', '.join(s['top_ours']) or 'none') + ' · Theirs: ' + (', '.join(s['top_theirs']) or 'none'))
+    return f'<b class="{t}" title="{tip}">{v:.0f}%</b><div class="sub">${s["ours"]:,} v ${s["theirs"]:,}</div>'
+
+
 def row_html(i, p, e):
-    side = f'<span class="side {p["side"].lower()}">{p["side"]}</span>'
+    side = side_pill(p)
     badges = ''
     if p.get('hold'):
         badges += '<span class="apr">3.25% APR</span>'
+    if p.get('held'):
+        badges += '<span class="held">Held</span>'
     if p.get('tag'):
         badges += f'<span class="tag">{esc(p["tag"])}</span>'
     if p.get('added') == str(TODAY):
@@ -555,24 +663,17 @@ def row_html(i, p, e):
         move = f'<div class="sub {"up" if p["ask"] < prev else "down"}">was {px(prev)}</div>'
     fair_ch = ''
     if p.get('prev_fair') is not None and abs(p['fair'] - p['prev_fair']) >= 0.005:
-        fair_ch = f'<div class="sub">was {p["prev_fair"]:.2f}</div>'
+        fair_ch = f'<div class="sub">was {fv(p["prev_fair"])}</div>'
     tone = 'r3' if e['tot'] >= 0.4 else 'r2' if e['tot'] >= 0.2 else 'r1' if e['tot'] >= 0.1 else 'r0'
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
     per_yr = f'{e["ann"] * 100:.0f}%' if e['yrs'] >= 0.5 else '<span class="faint">&lt;6 mo</span>'
-    s = p.get('smart') or {}
-    if s.get('share') is None:
-        smart = '<span class="faint">–</span>'
-    else:
-        v = s['share'] * 100
-        t = 'up' if v >= 60 else 'down' if v <= 40 else ''
-        tip = esc('Ours: ' + (', '.join(s['top_ours']) or 'none') + ' · Theirs: ' + (', '.join(s['top_theirs']) or 'none'))
-        smart = f'<b class="{t}" title="{tip}">{v:.0f}%</b><div class="sub">${s["ours"]:,} v ${s["theirs"]:,}</div>'
+    smart = smart_cell(p)
     end = datetime.date.fromisoformat(p['end'])
     return f'''<tr>
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side}{badges}</div><p class="why">{esc(p['why'])}</p></td>
   <td class="num" data-k="Ask"><b>{px(p['ask'])}</b>{move}</td>
-  <td class="num" data-k="Fair"><b>{p['fair']:.2f}</b>{fair_ch}</td>
+  <td class="num" data-k="Fair"><b>{fv(p['fair'])}</b>{fair_ch}</td>
   <td class="num ret {tone}" data-k="Return"><b>{pct(e['tot'])}</b>{bonus}</td>
   <td class="num" data-k="Per yr">{per_yr}</td>
   <td class="num" data-k="Smart $">{smart}</td>
@@ -588,7 +689,58 @@ def table_html(rows):
     return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
 
 
-def render(st, main, extra, noask):
+def held_row_html(i, p, h):
+    d = p['held']
+    badges = ''
+    if p.get('hold'):
+        badges += '<span class="apr">3.25% APR</span>'
+    if p.get('origin') != 'position':
+        badges += '<span class="new">Hunt pick</span>'
+    if p.get('tag'):
+        badges += f'<span class="tag">{esc(p["tag"])}</span>'
+    prev = p.get('prev_bid')
+    move = ''
+    if p.get('bid') and prev is not None and abs(p['bid'] - prev) >= 0.005:  # a higher bid is good news for a holder
+        move = f'<div class="sub {"up" if p["bid"] > prev else "down"}">was {px(prev)}</div>'
+    if p.get('fair') is None:
+        fair = '<span class="faint">–</span><div class="sub">not valued yet</div>'
+    else:
+        fair = f'<b>{fv(p["fair"])}</b>'
+        if p.get('prev_fair') is not None and abs(p['fair'] - p['prev_fair']) >= 0.005:
+            fair += f'<div class="sub">was {fv(p["prev_fair"])}</div>'
+    if h:
+        tone = 'down' if h['tot'] < 0 else 'flat' if h['tot'] < 0.02 else 'up'
+        bonus = f'<div class="sub gold">incl. +{h["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
+        hvs = f'<b class="{tone}">{h["tot"] * 100:+.1f}%</b>{bonus}'
+        per_yr = f'{h["ann"] * 100:+.0f}%' if h['yrs'] >= 0.5 else '<span class="faint">&lt;6 mo</span>'
+        edge = f'<b class="{tone}">{"+" if h["edge"] >= 0 else "−"}${abs(h["edge"]):,.0f}</b><div class="sub">on ${h["value"]:,.0f}</div>'
+    else:
+        hvs = per_yr = edge = '<span class="faint">–</span>'
+    why = f'<p class="why">{esc(p["why"])}</p>' if p.get('why') else ''
+    end = datetime.date.fromisoformat(p['end'])
+    return f'''<tr>
+  <td class="n">{i}</td>
+  <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
+  <td class="num" data-k="Held"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
+  <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{move}</td>
+  <td class="num" data-k="Fair">{fair}</td>
+  <td class="num" data-k="Hold vs sell">{hvs}</td>
+  <td class="num" data-k="Per yr">{per_yr}</td>
+  <td class="num" data-k="$ edge">{edge}</td>
+  <td class="num" data-k="Smart $">{smart_cell(p)}</td>
+  <td class="num" data-k="Ends">{end:%-d %b %Y}</td>
+</tr>'''
+
+
+def held_table_html(held):
+    head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th><th>Shares</th><th>Bid</th><th>Fair</th>'
+            '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th><th>Per yr</th>'
+            '<th title="Shares × (fair + reward − bid)">$ edge</th><th>Smart $</th><th>Ends</th></tr></thead>')
+    body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
+    return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
+
+
+def render(st, main, extra, noask, held):
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
     clusters = Counter(p.get('tag') for p, _ in rows if p.get('tag'))
@@ -600,7 +752,8 @@ def render(st, main, extra, noask):
     if st['resolved']:
         boxes.append('<div class="box"><h3>Resolved since the last run</h3><ul>' + ''.join(
             f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a>: our {p["side"]} '
-            f'<b class="{"up" if p["won"] else "down"}">{"won" if p["won"] else "lost"}</b></li>' for p in st['resolved']) +
+            f'<b class="{"up" if p["won"] else "down"}">{"won" if p["won"] else "lost"}</b>'
+            f'{" (held)" if p.get("held") else ""}</li>' for p in st['resolved']) +
             '</ul></div>')
     boxes.append(f'<div class="box gold"><h3>APR rewards</h3><p>Polymarket pays a 3.25% annual holding reward on the '
                  f'mid-price value of YES and NO positions in {st.get("hold_events", "the")} eligible events, sampled hourly '
@@ -621,6 +774,15 @@ def render(st, main, extra, noask):
                       'so there is no return to show.</p><ul class="plain">' + ''.join(
                           f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
                           f'{p["fair"]:.2f}</span></li>' for p in noask) + '</ul></section>')
+    above = sum(1 for _, h in held if h and h['tot'] < 0)
+    unvalued = sum(1 for p, _ in held if p.get('fair') is None)
+    held_html = ''
+    if held:
+        held_html = (f'<section id="positions"><h2>Your open positions: {len(held)}</h2><p class="note">The same analysis on '
+                     'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling into the '
+                     'best bid now: fair ÷ bid − 1, plus the holding reward where the market pays it. Red means the bid is above '
+                     'my fair value. <b>$ edge</b> = shares × (fair + reward − bid). Sorted with the lowest first.'
+                     f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else '<p class="note">Nothing clears +10% today.</p>'
     extra_html = f'<section><h2>Smaller edges (+5–10%)</h2>{table_html(extra)}</section>' if extra else ''
     swept = st.get('swept') or {}
@@ -666,7 +828,7 @@ header {{ display: flex; flex-wrap: wrap; justify-content: space-between; align-
 h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 42px); line-height: 1.05; letter-spacing: -.02em; margin: 6px 0 0; }}
 .lede {{ margin: 8px 0 0; color: var(--muted); max-width: 72ch; font-size: 14px; }}
 .stamp {{ font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; line-height: 1.6; }}
-.summary {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
+.summary {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
 .stat {{ padding: 14px 20px 16px 0; display: grid; gap: 2px; align-content: start; }}
 .stat + .stat {{ padding-left: 20px; border-left: 1px solid var(--rule); }}
 .stat .k {{ font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
@@ -698,6 +860,8 @@ td.mkt a {{ font-weight: 600; line-height: 1.35; }}
 .apr {{ color: var(--gold); background: var(--gold-bg); border: 1px solid var(--gold-line); }}
 .tag {{ color: var(--muted); border: 1px solid var(--rule); }}
 .new {{ color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }}
+.held {{ color: var(--surface); background: var(--ink); }}
+b.flat {{ color: var(--muted); }}
 .why {{ margin: 6px 0 0; font-size: 13px; color: var(--muted); max-width: 80ch; }}
 td.num {{ text-align: right; font-family: var(--mono); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }}
 td.num b {{ font-weight: 500; }}
@@ -759,9 +923,11 @@ footer p {{ margin: 0; }}
     <div class="stat"><span class="k">≥ +10% upside</span><span class="v">{len(main)}</span><span class="s">main list</span></div>
     <div class="stat"><span class="k">Smaller edges</span><span class="v">{len(extra)}</span><span class="s">+5–10%</span></div>
     <div class="stat goldk"><span class="k">Earn 3.25% APR</span><span class="v">{n_hold}</span><span class="s">gold badge</span></div>
+    <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
     <div class="stat"><span class="k">Changes today</span><span class="v">{sum(1 for p, _ in rows if p.get('added') == str(TODAY))} / {len(st['dropped'])}</span><span class="s">new / dropped</span></div>
   </section>
   <div class="boxes">{''.join(boxes)}</div>
+  {held_html}
   <section><h2>Main list: {len(main)} picks with at least +10% upside</h2>{main_html}</section>
   {extra_html}
   {noask_html}
