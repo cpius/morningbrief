@@ -416,6 +416,34 @@ def weather_section():
             '</section>')
 
 
+HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build
+
+
+def hunt_section():
+    """Teaser for the mispricing hunt page, if hunt/hunt.py rebuilt it today."""
+    try:
+        with open(HUNT) as fh:
+            h = json.load(fh)
+    except (OSError, ValueError):
+        print('  hunt: no summary, section left out')
+        return ''
+    if h.get('day') != f'{TODAY}':
+        print(f"  hunt: summary is from {h.get('day')}, section left out")
+        return ''
+    items = ''.join(
+        f'<li><a class="li-title" href="{html.escape(t["url"])}">{html.escape(t["name"])}</a>'
+        f'<span class="li-body">{t["side"]} at <b>{t["ask"]:.3g}</b>, fair {t["fair"]:.2f}, '
+        f'<b class="up">{t["tot"] * 100:+.0f}%</b>{" incl. the 3.25% APR reward" if t["hold"] else ""}</span></li>'
+        for t in h['top'])
+    resolved = ''.join(f'<li><span class="li-title">{html.escape(r["name"])}</span><span class="li-body">Resolved: our '
+                       f'{r["side"]} {"won" if r["won"] else "lost"}</span></li>' for r in h.get('resolved', []))
+    print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped")
+    return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>'
+            f'<p class="wx-note">{h["main"]} picks with at least +10% upside, {h["hold"]} of them earning the 3.25% APR '
+            f'holding reward; {h["new"]} new and {h["dropped"]} dropped today. Top five by return:</p>'
+            f'<ul>{resolved}{items}</ul><p class="wx-note"><a class="more" href="hunt/">Open the full list →</a></p></section>')
+
+
 TRADE_DAYS = 7
 
 
@@ -478,6 +506,7 @@ def trades_section(trades):
 
 trades_html = trades_section(recent_trades())
 weather_html = weather_section()
+hunt_html = hunt_section()
 
 lower = []
 if closed:
@@ -640,6 +669,9 @@ table.wx td {{ padding: 10px 14px; vertical-align: middle; }}
 td.cc {{ background: color-mix(in srgb, var(--faint) calc(var(--c) * 0.35%), transparent); }}
 td.faint {{ color: var(--faint); }}
 .verdict {{ font-weight: 600; font-size: 13.5px; white-space: nowrap; }}
+.hunt-teaser {{ display: grid; gap: 10px; }}
+.hunt-teaser h2 {{ margin: 0; }}
+.hunt-teaser .more {{ color: var(--accent); font-weight: 600; }}
 .trades {{ min-width: 0; }}
 .trades table {{ min-width: 640px; }}
 .trades .wx-note {{ margin: 10px 0 0; }}
@@ -697,6 +729,8 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
   </div>
 
   {trades_html}
+
+  {hunt_html}
 
   {weather_html}
 
