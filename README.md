@@ -35,6 +35,9 @@ event ids) and `site/hunt/wallets.json` (leaderboard PnL cache), `deploy.py` pub
 reads them back. A failed run therefore leaves the last good book in place. `hunt/seed.json` is the 30 Oct 2026
 book, used only when the live copy is missing. Working files go to `hunt/work/` (ignored).
 
+To change fair values outside the routine (for example after a deep dive), add entries to `hunt/updates.json`
+(`id`, `at` timestamp, `fair`, `why`). The next `pull` applies each one once, to the pick whose last review is older.
+
 The wallet's open positions are part of the book. `scan` marks picks the wallet holds and adds any held market that
 is missing, without a fair value (`FAIR NEEDED` lines; value them with `set`). The page's "Your open positions" table
 shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. what holding to resolution should earn over

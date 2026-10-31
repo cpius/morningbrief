@@ -5,7 +5,7 @@ The book (picks, fair values, reasons, notes) is carried from run to run in hunt
 `build` publishes it next to the page as site/hunt/state.json, and the next run's `pull` reads it back
 from the live site, so the cloud routine needs no git push. The repo copy hunt/seed.json is the fallback.
 
-    python3 hunt/hunt.py pull                 # load the book (live site, else seed); new day: last ask becomes "previous"
+    python3 hunt/hunt.py pull                 # load the book (live site, else seed), apply hunt/updates.json; new day: last ask becomes "previous"
     python3 hunt/hunt.py scan                 # reprice every pick, sweep for new events, print the worklist
     python3 hunt/hunt.py list                 # the book, with ids and returns
     python3 hunt/hunt.py show <id>            # one pick plus its market rules
@@ -40,6 +40,7 @@ WALLETS = os.path.join(WORK, 'wallets.json')
 CANDIDATES = os.path.join(WORK, 'candidates.txt')
 SEED = os.path.join(HERE, 'seed.json')
 SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
+UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull
 SITE = os.path.join(ROOT, 'site', 'hunt')
 LIVE = 'https://nothing-ever-happens-book.vercel.app/hunt/'
 GAMMA, CLOB, DATA = 'https://gamma-api.polymarket.com', 'https://clob.polymarket.com', 'https://data-api.polymarket.com'
@@ -179,6 +180,12 @@ def cmd_pull(a):
         wallets = None
     if not wallets or len(wallets) < 100:
         wallets = read(SEED_WALLETS)
+    if os.path.exists(UPDATES):  # each applies once: when it is newer than the pick's last review
+        for u in read(UPDATES):
+            for p in st['picks']:
+                if p['id'] == u['id'] and (p.get('reviewed') or '') < u['at']:
+                    p.update(fair=u['fair'], why=u['why'], reviewed=u['at'])
+                    print(f"applied update from {u['at']}: {p['name']} fair {u['fair']}")
     if st.get('day') != str(TODAY):  # first run today: last run's prices become the "previous" column
         for p in st['picks']:
             p['prev_ask'], p['prev_bid'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('fair')
