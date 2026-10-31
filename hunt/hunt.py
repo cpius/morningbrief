@@ -257,6 +257,7 @@ def sync_positions(st):
         return
     pos = [x for x in pos if not x.get('redeemable') and 0 < float(x.get('curPrice') or 0) < 1]
     by_token = {p['token']: p for p in st['picks']}
+    seeded = {p['token']: p for p in read(SEED)['picks'] if p.get('fair') is not None}  # values researched when seeding
     for x in pos:
         held = dict(size=round(x['size'], 2), avg=x['avgPrice'], cost=round(x['initialValue'], 2))
         if x['asset'] in by_token:
@@ -271,10 +272,13 @@ def sync_positions(st):
                  outcome=x['outcome'], event=str(x.get('eventId') or ''), q=m['question'], name=x['title'].rstrip('?'),
                  url=f"https://polymarket.com/event/{x['eventSlug']}", end=(m.get('endDate') or x.get('endDate') or '')[:10],
                  fair=None, why='', tag='', added=str(TODAY), origin='position', prev_ask=None, prev_fair=None, held=held)
+        if x['asset'] in seeded:
+            p.update({k: seeded[x['asset']][k] for k in ('fair', 'why', 'name', 'tag', 'reviewed')})
         p.update(reprice(p)[1])
         p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
         st['picks'].append(p)
-        print(f"HELD NEW {p['id']} {p['name']}: {p['outcome']} {held['size']:,.0f} sh @ {held['avg']:.3f}, added to the book")
+        print(f"HELD NEW {p['id']} {p['name']}: {p['outcome']} {held['size']:,.0f} sh @ {held['avg']:.3f}, added to the book"
+              f"{' with the seed fair value ' + str(p['fair']) if p['fair'] is not None else ''}")
     live = {x['asset'] for x in pos}
     for p in list(st['picks']):
         if p.get('held') and p['token'] not in live and not p.get('closed'):
