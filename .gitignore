@@ -5,3 +5,4 @@ site/
 # secrets never go in this repo
 .env*
 __pycache__/
+hunt/work/
