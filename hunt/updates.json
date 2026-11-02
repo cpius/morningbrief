@@ -88,5 +88,29 @@
   "at": "2026-10-31T19:30",
   "fair": 0.89,
   "why": "31 Oct deep dive: Houthis hold or contest nearly all of Taiz Gov. outside the besieged city; Saudi role is air power and supervision of Yemeni units, no credible report of Saudi regulars in Taiz. YES routes: a Saudi role in a Bab al-Mandab push (~5%), officers reported at Dhubab (~3%), city airlift (~1%), resolution noise (~1.5%). Fair YES ~11%. Book ~$90 deep"
+ },
+ {
+  "id": "1811265",
+  "at": "2026-11-01T13:30",
+  "fair": 0.75,
+  "why": "Deep dive 1 Nov: ~25% YES vs market 33.5%. Post-midterm firing ~14% (Rumsfeld/Sessions/Esper all went within a week of an election, but Trump called him 'a great warrior' on 29 Oct and has refused Dems this scalp before); Blackburn Senate-seat exit announced by 31 Dec ~8% (she can only appoint after her 16-17 Jan swearing-in, so January is likelier); lame-duck Massie vote/funding pressure ~3%. Smart money split. Rest a NO bid at 0.65-0.66."
+ },
+ {
+  "id": "5211896",
+  "at": "2026-11-01T13:30",
+  "fair": 0.85,
+  "why": "Deep dive 1 Nov: ~15% YES vs market 21.5%. The post-election firing window (4-14 Nov) and Massie's vote (week of 9 Nov) both fall in November; the Senate-seat route points to January. Correlated with the Dec 31 pick."
+ },
+ {
+  "id": "559661",
+  "at": "2026-11-02T01:30",
+  "fair": 0.09,
+  "why": "Deep dive 2 Nov: ~9% vs market 13.7%. Ossoff said at the Oct 13 debate he has 'zero interest' and is 'not running', and pledged to serve the full term. He must win GA on Nov 3 (~85%), and Warnock now signals 2028 (Georgia insiders say only one of them runs). Polls 4-8 nationally, 14 in NH. P(run) 0.30 x P(win|run) 0.30. The Nov 2 dip came from one holder (HerbertAppreciator) trimming."
+ },
+ {
+  "id": "559655",
+  "at": "2026-11-02T01:30",
+  "fair": 0.065,
+  "why": "Deep dive 2 Nov: ~6.5% vs market 5.05%. Likely to win PA by ~20+ on Nov 3 and won't pledge a full term; P(run) 0.75. Polls 4-7 in a moderate lane; Israel/Gaza is a primary liability. P(win|run) ~8.5%. Kalshi 4.75."
  }
 ]
