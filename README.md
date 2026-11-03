@@ -21,10 +21,13 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
 A book of Polymarket picks, mostly "nothing ever happens" NO bets on politics and geopolitics, each with a fair
 value and a one-line reason. Every morning it is repriced against the live order books and published at `/hunt/`.
 Return is fair ÷ ask − 1 held to resolution, plus Polymarket's 3.25% APR holding reward on markets that pay it
-(Gamma flag `holdingRewardsEnabled`; those rows get a gold badge).
+(Gamma flag `holdingRewardsEnabled`; those rows get a gold badge). The book is ranked by that return as a yearly rate,
+return × 365 / days (simple, with days counted as at least 14), so a small edge that resolves in weeks beats a big one
+that takes years. The main list is 30% a year and up, the appendix 10–30%.
 
     python3 hunt/hunt.py pull     # book from the live site's /hunt/state.json, else hunt/seed.json
     python3 hunt/hunt.py scan     # reprice, sweep ~60 politics/geo tags; prints RESOLVED/REVIEW lines, writes hunt/work/candidates.txt
+                                  # (new events, plus seen ones ending within 45 days)
     python3 hunt/hunt.py peek <event>   # a candidate event: markets, prices, rules
     python3 hunt/hunt.py set|drop|add|note ...   # judgement: fair values, reasons, new picks, "what changed" lines
     python3 hunt/hunt.py smart    # smart-money share (top-20 holders scored by leaderboard PnL)
@@ -44,5 +47,5 @@ shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. wh
 selling into the bid now, and the $ edge (shares × (fair + reward − bid)). Held positions are never auto-dropped and
 leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
 
-Build drops picks whose return fell below +5% and moves resolved markets to "Resolved". The page prints well as
+Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved". The page prints well as
 A4 landscape (browser Print → PDF).

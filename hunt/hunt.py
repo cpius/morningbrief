@@ -18,6 +18,8 @@ from the live site, so the cloud routine needs no git push. The repo copy hunt/s
     python3 hunt/hunt.py build                # write site/hunt/{index.html,state.json,wallets.json,summary.json}
 
 Return = fair / ask - 1, held to resolution, plus Polymarket's 3.25% APR holding reward where the market pays it.
+The book is ranked by that return as a yearly rate, return * 365 / days (days at least 14), so a small edge that
+resolves in weeks beats a big one that takes years.
 
 The wallet's open positions are part of the book too. `scan` marks picks the wallet holds and adds any held market
 that is missing, with no fair value yet (it prints FAIR NEEDED; set one with `set`). For a held position the page
@@ -50,8 +52,12 @@ NOW = datetime.datetime.now(ZoneInfo('Europe/Copenhagen'))
 TODAY = NOW.date()
 WALLET = '0x9d4a9ff98bdce01ff8081362f676749db0c85887'  # mdorup
 HOLD_APR = 0.0325       # Polymarket holding reward, variable at their discretion
-MAIN_EDGE = 0.10        # main list
-MIN_EDGE = 0.05         # appendix; below this a pick is dropped at build
+MAIN_ANN = 0.30         # main list: at least this much a year
+MIN_ANN = 0.10          # appendix; below this a year a pick is dropped at build
+MIN_EDGE = 0.03         # also dropped below this to resolution: inside a fair value's own error
+ANN_MIN_DAYS = 14       # annualize over at least this many days: the money doesn't go into the next bet the next day
+SHORT_DAYS = 45         # scan re-lists already-seen events ending this soon: small edges, big annualized returns
+SHORT_MIN_LIQ = 10_000  # ... if politics/geopolitics with at least this much liquidity in those markets
 REVIEW_MOVE = 0.05      # ask moved this much since the last run -> news check
 SOON_DAYS = 14          # ends this soon -> news check
 SMART_PNL = 50_000      # all-time PnL that counts as smart money
@@ -127,15 +133,30 @@ def find(st, pid):
     sys.exit(f'no pick with id {pid} (see `hunt.py list`)')
 
 
+def per_year(tot, days):
+    """A return to resolution as a simple yearly rate, as if bets like it kept paying the same for 12 months."""
+    return tot * 365 / max(days, ANN_MIN_DAYS)
+
+
 def econ(p):
     """Return math for one pick at today's ask, or None without an ask or a fair value."""
     if not p.get('ask') or p.get('fair') is None:
         return None
-    yrs = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1) / 365
+    days = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1)
+    yrs = days / 365
     ret = p['fair'] / p['ask'] - 1
     bonus = HOLD_APR * yrs * ((p['ask'] + p['fair']) / 2) / p['ask'] if p.get('hold') else 0.0
     tot = ret + bonus
-    return dict(yrs=yrs, ret=ret, bonus=bonus, tot=tot, ann=tot / yrs)
+    return dict(yrs=yrs, ret=ret, bonus=bonus, tot=tot, ann=per_year(tot, days))
+
+
+def weak(e):
+    """Why a pick no longer clears the bar to stay in the book, or None."""
+    if e['ann'] < MIN_ANN:
+        return f"{e['ann'] * 100:+.0f}% a year"
+    if e['tot'] < MIN_EDGE:
+        return f"{e['tot'] * 100:+.1f}% to resolution"
+    return None
 
 
 def hold_econ(p):
@@ -143,11 +164,12 @@ def hold_econ(p):
     h = p.get('held')
     if not h or p.get('fair') is None or not p.get('bid'):
         return None
-    yrs = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1) / 365
+    days = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1)
+    yrs = days / 365
     bid, fair = p['bid'], p['fair']
     reward = HOLD_APR * yrs * (bid + fair) / 2 if p.get('hold') else 0.0  # per share, on the mid value
     tot = (fair + reward) / bid - 1
-    return dict(yrs=yrs, tot=tot, bonus=reward / bid, ann=tot / yrs, edge=h['size'] * (fair + reward - bid),
+    return dict(yrs=yrs, tot=tot, bonus=reward / bid, ann=per_year(tot, days), edge=h['size'] * (fair + reward - bid),
                 value=h['size'] * bid)
 
 
@@ -336,18 +358,28 @@ def cmd_scan(a):
     hold_events = [e for e in events.values() if any(m['hold'] for m in e['markets'])]
     def mkts(ms):
         return '; '.join(f"{(m['g'] or 'Yes')[:24]} {m['mid']:.2f}" for m in ms[:6])
-    lines = []
-    new = [e for e in events.values() if e['id'] not in seen and candidate_markets(e)]
-    for e in sorted(new, key=lambda e: min(m['days'] for m in candidate_markets(e))):
-        ms = sorted(candidate_markets(e), key=lambda m: -m['mid'])
+    def line(e, ms):
+        ms = sorted(ms, key=lambda m: -m['mid'])
         apr = ' APR' if any(m['hold'] for m in e['markets']) else ''
-        lines.append(f"{e['id']} [{min(m['days'] for m in ms)}d L${sum(m['liq'] for m in ms) / 1000:.0f}k{apr}] {e['title'][:80]}"
-                     f" :: {mkts(ms)}")
+        return (f"{e['id']} [{min(m['days'] for m in ms)}d L${sum(m['liq'] for m in ms) / 1000:.0f}k{apr}] {e['title'][:80]}"
+                f" :: {mkts(ms)}")
+    new = [e for e in events.values() if e['id'] not in seen and candidate_markets(e)]
+    lines = [line(e, candidate_markets(e)) for e in sorted(new, key=lambda e: min(m['days'] for m in candidate_markets(e)))]
+    # Seen events are skipped above, but a short-dated market can pay a big yearly rate on a small edge, so re-list those
+    in_book = {p['id'] for p in picks}
+    soon = {e['id']: ms for e in events.values() if e['id'] in seen and {'politics', 'geopolitics'} & set(e['tags'])
+            for ms in [[m for m in candidate_markets(e) if m['days'] <= SHORT_DAYS and m['id'] not in in_book]]
+            if sum(m['liq'] for m in ms) >= SHORT_MIN_LIQ}
+    soon_lines = [line(events[i], ms) for i, ms in sorted(soon.items(), key=lambda kv: min(m['days'] for m in kv[1]))]
     os.makedirs(WORK, exist_ok=True)
     with open(CANDIDATES, 'w') as fh:
         fh.write(f'# New events since the last sweep ({len(new)}), nearest end first. Format: '
                  'event id [days to first end, liquidity, APR = pays the holding reward] title :: market YES-mid; ...\n')
         fh.write('\n'.join(lines) + '\n')
+        fh.write(f'\n# Seen before, not in the book, ending within {SHORT_DAYS} days (politics/geo, liquidity ${SHORT_MIN_LIQ // 1000}k+; '
+                 f'{len(soon)}), nearest end first. '
+                 'Small edges here are big yearly rates.\n')
+        fh.write('\n'.join(soon_lines) + '\n')
     st['seen'] = sorted(seen | set(events))
     st['hold_events'] = len(hold_events)
     st['swept'] = dict(events=len(events), markets=sum(len(e['markets']) for e in events.values()))
@@ -377,29 +409,30 @@ def cmd_scan(a):
         if days <= SOON_DAYS:
             why.append(f'ends in {days}d')
         e = econ(p)
-        if e and e['tot'] < MIN_EDGE and not p.get('held'):
-            why.append(f"edge gone ({e['tot'] * 100:+.0f}%), dropped at build unless the fair value changes")
+        if e and weak(e) and not p.get('held'):
+            why.append(f"edge gone ({weak(e)}), dropped at build unless the fair value changes")
         if p.get('held') and p.get('bid') and p['bid'] > p['fair']:
             why.append(f"held, bid {p['bid']:.3g} is above the fair value")
         if why:
             prev = f"{p['prev_ask']:.3g}→" if p.get('prev_ask') else ''
             ask = f"{p['ask']:.3g}" if p.get('ask') else '–'
-            ret = f"{e['tot'] * 100:+.0f}%" if e else '–'
+            ret = f"{e['tot'] * 100:+.0f}% ({e['ann'] * 100:+,.0f}% a year)" if e else '–'
             print(f"REVIEW {p['id']} [{'; '.join(why)}] {p['name']} | {p['side']} ask {prev}{ask} fair {p['fair']:.2f} return {ret}"
                   f"{' | HELD' if p.get('held') else ''}")
-    print(f'NEW {len(new)} new candidate events -> {os.path.relpath(CANDIDATES, ROOT)}')
+    print(f'NEW {len(new)} new candidate events, {len(soon)} short-dated seen ones -> {os.path.relpath(CANDIDATES, ROOT)}')
 
 
 # ---------------------------------------------------------------- edit the book
 
 def cmd_list(a):
     st = load()
-    rows = sorted(st['picks'], key=lambda p: -(econ(p) or {'tot': -9})['tot'])
+    rows = sorted(st['picks'], key=lambda p: -(econ(p) or {'ann': -9})['ann'])
     for p in rows:
         e = econ(p)
         fair = f"{p['fair']:.3f}" if p.get('fair') is not None else '  –  '
         print(f"{p['id']:>8} {p['side']:3} ask {p.get('ask') or '–':<6} fair {fair} "
-              f"{(e['tot'] * 100 if e else 0):+5.0f}% {'APR ' if p.get('hold') else '    '}{'HELD ' if p.get('held') else '     '}"
+              f"{(e['ann'] * 100 if e else 0):+7,.0f}%/yr {(e['tot'] * 100 if e else 0):+5.0f}% {p['end']} "
+              f"{'APR ' if p.get('hold') else '    '}{'HELD ' if p.get('held') else '     '}"
               f"{p.get('tag') or '':14.14} {p['name']}")
 
 
@@ -437,7 +470,8 @@ def cmd_set(a):
     p['reviewed'] = str(TODAY)
     write(STATE, st)
     e = econ(p)
-    print(f"set {p['id']} {p['name']}: fair {p['fair']:.3f}, return {e['tot'] * 100:+.0f}%" if e else f"set {p['id']}")
+    print(f"set {p['id']} {p['name']}: fair {p['fair']:.3f}, return {e['tot'] * 100:+.0f}% ({e['ann'] * 100:+,.0f}% a year)"
+          if e else f"set {p['id']}")
 
 
 def cmd_drop(a):
@@ -477,10 +511,13 @@ def cmd_add(a):
     write(STATE, st)
     x = econ(p)
     print(f"added {p['id']} {p['name']}: {a.side} ask {p['ask']} (${p['depth']} within 2¢), fair {a.fair}, "
-          f"return {x['tot'] * 100:+.0f}%{' incl. APR reward' if p['hold'] else ''}, ends {p['end']}" if x else
-          f"added {p['id']} {p['name']} (no ask on the book)")
-    if x and x['tot'] < MIN_EDGE:
-        print(f"warning: below the +{MIN_EDGE * 100:.0f}% floor, so build will drop it again")
+          f"return {x['tot'] * 100:+.0f}%{' incl. APR reward' if p['hold'] else ''} ({x['ann'] * 100:+,.0f}% a year), "
+          f"ends {p['end']}" if x else f"added {p['id']} {p['name']} (no ask on the book)")
+    if x and weak(x):
+        print(f"warning: {weak(x)} is under the bar ({MIN_ANN * 100:.0f}% a year and +{MIN_EDGE * 100:.0f}% to resolution), "
+              "so build will drop it again")
+    elif x and x['ann'] < MAIN_ANN:
+        print(f"note: under {MAIN_ANN * 100:.0f}% a year, so it goes to the appendix, not the main list")
 
 
 def cmd_note(a):
@@ -577,19 +614,19 @@ def cmd_build(a):
             st['resolved'].append(p)
             continue
         e = econ(p)
-        if e and e['tot'] < MIN_EDGE and not p.get('held'):
+        if e and weak(e) and not p.get('held'):
             prev = f"{p['prev_ask']:.3g}→" if p.get('prev_ask') else ''
-            st['dropped'].append(dict(p, reason=f"Edge gone: ask {prev}{p['ask']:.3g}, fair {p['fair']:.2f}"))
+            st['dropped'].append(dict(p, reason=f"Edge gone: ask {prev}{p['ask']:.3g}, fair {p['fair']:.2f}, {weak(e)}"))
             continue
         keep.append(p)
     st['picks'] = keep
-    rows = [(p, econ(p)) for p in keep if econ(p) and econ(p)['tot'] >= MIN_EDGE]
-    rows.sort(key=lambda r: -r[1]['tot'])
-    main = [r for r in rows if r[1]['tot'] >= MAIN_EDGE]
-    extra = [r for r in rows if r[1]['tot'] < MAIN_EDGE]
+    rows = [(p, econ(p)) for p in keep if econ(p) and not weak(econ(p))]
+    rows.sort(key=lambda r: -r[1]['ann'])
+    main = [r for r in rows if r[1]['ann'] >= MAIN_ANN]
+    extra = [r for r in rows if r[1]['ann'] < MAIN_ANN]
     noask = [p for p in keep if not econ(p) and not p.get('held')]
     held = [(p, hold_econ(p)) for p in keep if p.get('held')]
-    held.sort(key=lambda r: (r[1] is None, r[1]['tot'] if r[1] else 0))  # bid above fair first, unvalued last
+    held.sort(key=lambda r: (r[1] is None, r[1]['ann'] if r[1] else 0))  # bid above fair first, unvalued last
     st['built'] = NOW.isoformat(timespec='seconds')
 
     os.makedirs(SITE, exist_ok=True)
@@ -600,7 +637,7 @@ def cmd_build(a):
     with open(WALLETS) as src, open(os.path.join(SITE, 'wallets.json'), 'w') as dst:
         dst.write(src.read())
     short = lambda p, e: dict(name=p['name'], side=p['side'], ask=p['ask'], fair=p['fair'], tot=round(e['tot'], 4),
-                              hold=bool(p.get('hold')), url=p['url'])
+                              ann=round(e['ann'], 4), end=p['end'], hold=bool(p.get('hold')), url=p['url'])
     summary = dict(day=str(TODAY), built=st['built'], main=len(main), extra=len(extra),
                    hold=sum(1 for p, _ in rows if p.get('hold')), dropped=len(st['dropped']),
                    new=sum(1 for p, _ in rows if p.get('added') == str(TODAY)),
@@ -618,14 +655,15 @@ def cmd_build(a):
           f"{summary['hold']} earn the APR reward, {summary['new']} new today, {len(st['dropped'])} dropped, "
           f"{len(st['resolved'])} resolved")
     for p, e in main[:10]:
-        print(f"  {e['tot'] * 100:+4.0f}% {'APR ' if p.get('hold') else '    '}{p['side']} {p['ask']:.3g} fair {p['fair']:.2f}  {p['name']}")
+        print(f"  {e['ann'] * 100:+7,.0f}%/yr {e['tot'] * 100:+4.0f}% {'APR ' if p.get('hold') else '    '}{p['side']} "
+              f"{p['ask']:.3g} fair {p['fair']:.2f} ends {p['end']}  {p['name']}")
     print(f"positions: {len(held)} held, {len(summary['held_above'])} with the bid above fair, "
           f"{summary['held_unvalued']} without a fair value, hold-vs-sell edge ${summary['held_edge']:+,.0f}")
     for p, h in held:
         fair = f"{p['fair']:.3f}" if p.get('fair') is not None else '–'
-        hvs = f"{h['tot'] * 100:+.1f}%" if h else '–'
+        hvs = f"{h['tot'] * 100:+.1f}% ({h['ann'] * 100:+,.0f}%/yr)" if h else '–'
         print(f"  held {p['held']['size']:>8,.0f} {p.get('outcome') or p['side']:4} bid {px(p.get('bid')):>5} fair {fair:<5} "
-              f"hold vs sell {hvs:>7}  {p['name']}")
+              f"hold vs sell {hvs:>16}  {p['name']}")
     for p in st['dropped']:
         print(f"  dropped: {p['name']}: {p['reason']}")
     for p in st['resolved']:
@@ -639,7 +677,7 @@ def esc(s):
 
 
 def pct(x):
-    return f'{x * 100:+.0f}%'
+    return f'{x * 100:+,.0f}%'
 
 
 def px(x):
@@ -688,9 +726,8 @@ def row_html(i, p, e):
     fair_ch = ''
     if p.get('prev_fair') is not None and abs(p['fair'] - p['prev_fair']) >= 0.005:
         fair_ch = f'<div class="sub">was {fv(p["prev_fair"])}</div>'
-    tone = 'r3' if e['tot'] >= 0.4 else 'r2' if e['tot'] >= 0.2 else 'r1' if e['tot'] >= 0.1 else 'r0'
+    tone = 'r3' if e['ann'] >= 1 else 'r2' if e['ann'] >= 0.5 else 'r1' if e['ann'] >= MAIN_ANN else 'r0'
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
-    per_yr = f'{e["ann"] * 100:.0f}%' if e['yrs'] >= 0.5 else '<span class="faint">&lt;6 mo</span>'
     smart = smart_cell(p)
     end = datetime.date.fromisoformat(p['end'])
     return f'''<tr>
@@ -698,8 +735,8 @@ def row_html(i, p, e):
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side}{badges}</div><p class="why">{esc(p['why'])}</p></td>
   <td class="num" data-k="Ask"><b>{px(p['ask'])}</b>{move}</td>
   <td class="num" data-k="Fair"><b>{fv(p['fair'])}</b>{fair_ch}</td>
-  <td class="num ret {tone}" data-k="Return"><b>{pct(e['tot'])}</b>{bonus}</td>
-  <td class="num" data-k="Per yr">{per_yr}</td>
+  <td class="num" data-k="Return"><b>{pct(e['tot'])}</b>{bonus}</td>
+  <td class="num ret {tone}" data-k="Per yr"><b>{pct(e['ann'])}</b></td>
   <td class="num" data-k="Smart $">{smart}</td>
   <td class="num" data-k="Depth">${p.get('depth') or 0:,}</td>
   <td class="num" data-k="Ends">{end:%-d %b %Y}</td>
@@ -707,8 +744,10 @@ def row_html(i, p, e):
 
 
 def table_html(rows):
-    head = ('<thead><tr><th class="n">#</th><th class="mkt">Market</th><th>Ask</th><th>Fair</th><th>Return</th>'
-            '<th>Per yr</th><th title="Share of smart-money dollars on our side">Smart $</th><th>Depth</th><th>Ends</th></tr></thead>')
+    head = ('<thead><tr><th class="n">#</th><th class="mkt">Market</th><th>Ask</th><th>Fair</th>'
+            '<th title="Fair ÷ ask − 1 held to resolution, plus the holding reward">Return</th>'
+            '<th title="Return ÷ years to resolution; the list is ranked by it">Per yr ▾</th>'
+            '<th title="Share of smart-money dollars on our side">Smart $</th><th>Depth</th><th>Ends</th></tr></thead>')
     body = '\n'.join(row_html(i, p, e) for i, (p, e) in enumerate(rows, 1))
     return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
 
@@ -736,7 +775,7 @@ def held_row_html(i, p, h):
         tone = 'down' if h['tot'] < 0 else 'flat' if h['tot'] < 0.02 else 'up'
         bonus = f'<div class="sub gold">incl. +{h["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
         hvs = f'<b class="{tone}">{h["tot"] * 100:+.1f}%</b>{bonus}'
-        per_yr = f'{h["ann"] * 100:+.0f}%' if h['yrs'] >= 0.5 else '<span class="faint">&lt;6 mo</span>'
+        per_yr = f'<b class="{tone}">{pct(h["ann"])}</b>'
         edge = f'<b class="{tone}">{"+" if h["edge"] >= 0 else "−"}${abs(h["edge"]):,.0f}</b><div class="sub">on ${h["value"]:,.0f}</div>'
     else:
         hvs = per_yr = edge = '<span class="faint">–</span>'
@@ -758,7 +797,8 @@ def held_row_html(i, p, h):
 
 def held_table_html(held):
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th><th>Shares</th><th>Bid</th><th>Fair</th>'
-            '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th><th>Per yr</th>'
+            '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th>'
+            '<th title="Hold vs sell ÷ years to resolution">Per yr</th>'
             '<th title="Shares × (fair + reward − bid)">$ edge</th><th>Smart $</th><th>Ends</th></tr></thead>')
     body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
     return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
@@ -805,10 +845,12 @@ def render(st, main, extra, noask, held):
         held_html = (f'<section id="positions"><h2>Your open positions: {len(held)}</h2><p class="note">The same analysis on '
                      'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling into the '
                      'best bid now: fair ÷ bid − 1, plus the holding reward where the market pays it. Red means the bid is above '
-                     'my fair value. <b>$ edge</b> = shares × (fair + reward − bid). Sorted with the lowest first.'
+                     'my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares × (fair + reward − bid). '
+                     'Sorted by Per yr, lowest first.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
-    main_html = table_html(main) if main else '<p class="note">Nothing clears +10% today.</p>'
-    extra_html = f'<section><h2>Smaller edges (+5–10%)</h2>{table_html(extra)}</section>' if extra else ''
+    main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
+    extra_html = (f'<section><h2>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h2>{table_html(extra)}</section>'
+                  if extra else '')
     swept = st.get('swept') or {}
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -940,26 +982,31 @@ footer p {{ margin: 0; }}
       <div class="eyebrow"><a href="/">← Morning brief</a> · Polymarket</div>
       <h1>Mispricing hunt</h1>
       <p class="lede">Markets where my fair value beats the best ask, mostly "nothing ever happens" NO bets on politics and
-      geopolitics. Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
+      geopolitics, ranked by annualized return: a small edge that pays out in weeks beats a big one that takes years.
+      Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
     </div>
     <div class="stamp">Asks at {NOW:%-d %b %Y, %H:%M}<br>{swept.get('events', 0):,} events swept<br>{len(st['picks'])} picks in the book</div>
   </header>
   <section class="summary" aria-label="Summary">
-    <div class="stat"><span class="k">≥ +10% upside</span><span class="v">{len(main)}</span><span class="s">main list</span></div>
-    <div class="stat"><span class="k">Smaller edges</span><span class="v">{len(extra)}</span><span class="s">+5–10%</span></div>
+    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v">{len(main)}</span><span class="s">main list</span></div>
+    <div class="stat"><span class="k">Slower picks</span><span class="v">{len(extra)}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
     <div class="stat goldk"><span class="k">Earn 3.25% APR</span><span class="v">{n_hold}</span><span class="s">gold badge</span></div>
     <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
     <div class="stat"><span class="k">Changes today</span><span class="v">{sum(1 for p, _ in rows if p.get('added') == str(TODAY))} / {len(st['dropped'])}</span><span class="s">new / dropped</span></div>
   </section>
   <div class="boxes">{''.join(boxes)}</div>
   {held_html}
-  <section><h2>Main list: {len(main)} picks with at least +10% upside</h2>{main_html}</section>
+  <section><h2>Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year</h2>{main_html}</section>
   {extra_html}
   {noask_html}
   {dropped}
   <footer>
     <p><b>Ask</b> is the best offer for our side now; "was" shows the last run's ask (green = cheaper today). <b>Fair</b> is my
-    probability that our side pays out. <b>Per yr</b> divides the return by years to resolution (simple, not compounded).
+    probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
+    a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
+    ranked by it. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
+    don't blow the rate up. A pick leaves the book below {MIN_ANN * 100:.0f}% a year or below
+    +{MIN_EDGE * 100:.0f}% to resolution, which is inside a fair value's own error.
     <b>Depth</b> is the dollars on offer at or within 2¢ of the ask.</p>
     <p><b>Smart $</b> is the share of dollars held by wallets with at least $50k all-time profit (Polymarket leaderboard) among
     the top 20 holders of each side that sits on our side; green ≥ 60%, red ≤ 40%, "–" under $300 of such money. Two
