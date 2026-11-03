@@ -470,7 +470,8 @@ def hunt_section():
     items = ''.join(
         f'<li><a class="li-title" href="{html.escape(t["url"])}">{html.escape(t["name"])}</a>'
         f'<span class="li-body">{t["side"]} at <b>{t["ask"]:.3g}</b>, fair {t["fair"]:.2f}, '
-        f'<b class="up">{t["tot"] * 100:+.0f}%</b>{" incl. the 3.25% APR reward" if t["hold"] else ""}</span></li>'
+        f'<b class="up">{t["ann"] * 100:+,.0f}% a year</b> ({t["tot"] * 100:+.0f}% by {t["end"]}'
+        f'{" incl. the 3.25% APR reward" if t["hold"] else ""})</span></li>'
         for t in h['top'])
     resolved = ''.join(f'<li><span class="li-title">{html.escape(r["name"])}</span><span class="li-body">Resolved: our '
                        f'{r["side"]} {"won" if r["won"] else "lost"}</span></li>' for r in h.get('resolved', []))
@@ -486,8 +487,8 @@ def hunt_section():
     print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped; "
           f"{h.get('held', 0)} positions, {len(h.get('held_above') or [])} with the bid above fair")
     return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>{held}'
-            f'<p class="wx-note">{h["main"]} picks with at least +10% upside, {h["hold"]} of them earning the 3.25% APR '
-            f'holding reward; {h["new"]} new and {h["dropped"]} dropped today. Top five by return:</p>'
+            f'<p class="wx-note">{h["main"]} picks returning at least 30% a year, {h["hold"]} of them earning the 3.25% APR '
+            f'holding reward; {h["new"]} new and {h["dropped"]} dropped today. Top five by annualized return:</p>'
             f'<ul>{resolved}{items}</ul><p class="wx-note"><a class="more" href="hunt/">Open the full list →</a></p></section>')
 
 
