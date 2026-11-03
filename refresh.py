@@ -4,7 +4,7 @@
 Fetches live positions and the last 24h of wallet activity, computes a
 trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 """
-import datetime, html, json, os, time, urllib.error, urllib.request
+import datetime, html, json, os, time, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
 
 from favicon import FAVICON
@@ -19,12 +19,24 @@ RESEARCH = os.path.join(HERE, 'research.json')  # "why it moved" notes, keyed by
 MAX_MOVE = 3.0  # cents; full width of the 24h bar
 SIG_MOVE = 2.0  # cents; a position needs research when its price moves this much ...
 SIG_USD = 10.0  # ... or its 24h $ change is at least this
+TRADE_DAYS = 7  # the trades list covers fills from this many days
 UA = {'User-Agent': 'Mozilla/5.0'}
 
 
 def get(url, timeout=30):
     req = urllib.request.Request(url, headers=UA)
     return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+
+def pages(url):
+    """Every row of a Data API v2 list, following its next_cursor (v2 has no offset)."""
+    rows, cursor = [], None
+    while True:
+        d = get(url + (f'&cursor={urllib.parse.quote(cursor)}' if cursor else ''))
+        rows += d['data']
+        cursor = d['pagination'].get('next_cursor')
+        if not cursor:
+            return rows
 
 
 NOW = int(time.time())
@@ -47,30 +59,31 @@ def price_24h_ago(asset):
 
 
 # ---- fetch ---------------------------------------------------------------
-positions = get(f'https://data-api.polymarket.com/positions?user={WALLET}&limit=500&sizeThreshold=0.1')
-activity_all = get(f'https://data-api.polymarket.com/activity?user={WALLET}&limit=500')
+# Data API v2: snake_case rows; the default OPEN status includes redeemable winners, filter_amount is v1's sizeThreshold
+positions = pages(f'https://data-api.polymarket.com/v2/positions?user={WALLET}&limit=500&filter_amount=0.1')
+activity_all = pages(f'https://data-api.polymarket.com/v2/activity?user={WALLET}&start={NOW - TRADE_DAYS * 86400}&limit=500')
 activity = [a for a in activity_all if a['timestamp'] >= T0]
 
 flows = defaultdict(lambda: dict(buy_sh=0.0, buy_cash=0.0, sell_sh=0.0, sell_cash=0.0))
 meta = {}
 for a in activity:
     if a['type'] == 'TRADE':
-        f = flows[a['asset']]
+        f = flows[a['token_id']]
         if a['side'] == 'BUY':
-            f['buy_sh'] += a['size']; f['buy_cash'] += a['usdcSize']
+            f['buy_sh'] += a['size']; f['buy_cash'] += a['usdc_size']
         else:
-            f['sell_sh'] += a['size']; f['sell_cash'] += a['usdcSize']
-        meta.setdefault(a['asset'], a)
-    elif a['type'] == 'REDEEM' and a.get('conditionId'):
+            f['sell_sh'] += a['size']; f['sell_cash'] += a['usdc_size']
+        meta.setdefault(a['token_id'], a)
+    elif a['type'] == 'REDEEM' and a.get('condition_id'):
         # Redeeming pays the winning outcome; treat it as a sale at the payout.
         try:
-            m = get(f"https://gamma-api.polymarket.com/markets?condition_ids={a['conditionId']}&closed=true")[0]
+            m = get(f"https://gamma-api.polymarket.com/markets?condition_ids={a['condition_id']}&closed=true")[0]
             prices = [float(x) for x in json.loads(m['outcomePrices'])]
             tokens = json.loads(m['clobTokenIds'])
             idx = prices.index(max(prices))
             asset = tokens[idx]
             f = flows[asset]
-            f['sell_sh'] += a['size']; f['sell_cash'] += a['usdcSize']; f['redeemed'] = True
+            f['sell_sh'] += a['size']; f['sell_cash'] += a['usdc_size']; f['redeemed'] = True
             meta.setdefault(asset, dict(a, outcome=json.loads(m['outcomes'])[idx]))
         except Exception:
             pass
@@ -78,18 +91,18 @@ for a in activity:
 rows = []
 held = set()
 for p in positions:
-    held.add(p['asset'])
-    p24, _, series = price_24h_ago(p['asset'])
-    rows.append(dict(asset=p['asset'], title=p['title'], outcome=p['outcome'], event=p['eventSlug'],
-                     end=p['endDate'], size=p['size'], avg=p['avgPrice'], now=p['curPrice'], p24=p24,
-                     traded=p['initialValue'], towin=p['size'], value=p['currentValue'],
-                     pnl=p['cashPnl'], pct=p['percentPnl'], redeemable=p['redeemable'], closed=False,
+    held.add(p['token_id'])
+    p24, _, series = price_24h_ago(p['token_id'])
+    rows.append(dict(asset=p['token_id'], title=p['title'], outcome=p['outcome'], event=p['event_slug'],
+                     end=p['end_date'], size=p['current_size'], avg=p['avg_price'], now=p['current_price'], p24=p24,
+                     traded=p['entry_cost_usdc'], towin=p['current_size'], value=p['current_value'],
+                     pnl=p['unrealized_pnl'], pct=p['percent_pnl'], redeemable=p['redeemable'], closed=False,
                      series=series))
 for asset, a in meta.items():
     if asset in held:
         continue
     p24, last, series = price_24h_ago(asset)
-    rows.append(dict(asset=asset, title=a['title'], outcome=a['outcome'], event=a.get('eventSlug'),
+    rows.append(dict(asset=asset, title=a['title'], outcome=a['outcome'], event=a.get('event_slug'),
                      end=None, size=0, avg=None, now=last if last is not None else 0, p24=p24,
                      traded=0, towin=0, value=0, pnl=0, pct=0, redeemable=False, closed=True,
                      series=series))
@@ -99,7 +112,7 @@ for r in rows:
     r['flows'] = f
     r['sh24'] = r['size'] - f['buy_sh'] + f['sell_sh']
     base = r['p24'] if r['p24'] is not None else r['now']
-    # value now - value 24h ago - cash in + cash out (fees are inside usdcSize)
+    # value now - value 24h ago - cash in + cash out (fees are inside usdc_size)
     r['d24'] = r['size'] * r['now'] - r['sh24'] * base - f['buy_cash'] + f['sell_cash']
     r['move'] = (r['now'] - base) * 100
     r['sig'] = abs(r['move']) >= SIG_MOVE or abs(r['d24']) >= SIG_USD
@@ -478,24 +491,21 @@ def hunt_section():
             f'<ul>{resolved}{items}</ul><p class="wx-note"><a class="more" href="hunt/">Open the full list →</a></p></section>')
 
 
-TRADE_DAYS = 7
-
-
 def recent_trades():
     """Fills from the last TRADE_DAYS days, grouped by market, side and price so a limit order's fills read as one line."""
     groups = {}
     for a in activity_all:
         if a['type'] != 'TRADE' or a['timestamp'] < NOW - TRADE_DAYS * 86400:
             continue
-        g = groups.setdefault((a['asset'], a['side'], round(a['price'], 4)), dict(a, shares=0.0, cash=0.0, fills=0, t0=a['timestamp'], t1=a['timestamp']))
-        g['shares'] += a['size']; g['cash'] += a['usdcSize']; g['fills'] += 1
+        g = groups.setdefault((a['token_id'], a['side'], round(a['price'], 4)), dict(a, shares=0.0, cash=0.0, fills=0, t0=a['timestamp'], t1=a['timestamp']))
+        g['shares'] += a['size']; g['cash'] += a['usdc_size']; g['fills'] += 1
         g['t0'] = min(g['t0'], a['timestamp']); g['t1'] = max(g['t1'], a['timestamp'])
     now_by_asset = {r['asset']: r['now'] for r in rows}
     out = []
     for g in sorted(groups.values(), key=lambda g: -g['t1']):
-        now = now_by_asset.get(g['asset'])
+        now = now_by_asset.get(g['token_id'])
         if now is None:
-            now = price_24h_ago(g['asset'])[1]
+            now = price_24h_ago(g['token_id'])[1]
         g['now'] = now
         if now is not None:
             sgn = 1 if g['side'] == 'BUY' else -1
@@ -514,7 +524,7 @@ def trades_section(trades):
         verb = 'Bought' if g['side'] == 'BUY' else 'Sold'
         span = when(g['t1']) if g['t1'] - g['t0'] < 600 else f"{when(g['t0'])} – {when(g['t1'])}"
         fills = f"{g['fills']} fills" if g['fills'] > 1 else '1 fill'
-        link = f"https://polymarket.com/event/{html.escape(g['eventSlug'])}" if g.get('eventSlug') else '#'
+        link = f"https://polymarket.com/event/{html.escape(g['event_slug'])}" if g.get('event_slug') else '#'
         if g['now'] is None:
             now_cell = '<td class="num faint">no price</td><td class="num faint">–</td>'
         else:

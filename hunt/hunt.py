@@ -25,7 +25,7 @@ shows "hold vs sell": fair / best bid - 1 plus the reward, i.e. what holding to 
 into the bid now. Held positions are never auto-dropped; they leave the book when sold, unless they are also hunt picks.
 Only the standard library is used.
 """
-import argparse, datetime, html, json, os, re, sys, threading, time, urllib.error, urllib.request
+import argparse, datetime, html, json, os, re, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
@@ -89,6 +89,17 @@ def get(url, tries=5, timeout=20):
             if i == tries - 1:
                 raise
             time.sleep(1 + i)
+
+
+def pages(url):
+    """Every row of a Data API v2 list, following its next_cursor (v2 has no offset)."""
+    rows, cursor = [], None
+    while True:
+        d = get(url + (f'&cursor={urllib.parse.quote(cursor)}' if cursor else ''))
+        rows += d['data']
+        cursor = d['pagination'].get('next_cursor')
+        if not cursor:
+            return rows
 
 
 def read(path):
@@ -260,35 +271,35 @@ def candidate_markets(e):
 def sync_positions(st):
     """Mark the picks the wallet holds; add held markets missing from the book (fair value still to be set)."""
     try:
-        pos = get(f'{DATA}/positions?user={WALLET}&limit=500&sizeThreshold=0.1')
+        pos = pages(f'{DATA}/v2/positions?user={WALLET}&limit=500&filter_amount=0.1')
     except Exception as e:
         print(f'positions unavailable ({e}); held marks left as they were')
         return
-    pos = [x for x in pos if not x.get('redeemable') and 0 < float(x.get('curPrice') or 0) < 1]
+    pos = [x for x in pos if not x.get('redeemable') and 0 < float(x.get('current_price') or 0) < 1]
     by_token = {p['token']: p for p in st['picks']}
     seeded = {p['token']: p for p in read(SEED)['picks'] if p.get('fair') is not None}  # values researched when seeding
     for x in pos:
-        held = dict(size=round(x['size'], 2), avg=x['avgPrice'], cost=round(x['initialValue'], 2))
-        if x['asset'] in by_token:
-            by_token[x['asset']]['held'] = held
+        held = dict(size=round(x['current_size'], 2), avg=x['avg_price'], cost=round(x['entry_cost_usdc'], 2))
+        if x['token_id'] in by_token:
+            by_token[x['token_id']]['held'] = held
             continue
         try:
-            m = get(f"{GAMMA}/markets?condition_ids={x['conditionId']}")[0]
+            m = get(f"{GAMMA}/markets?condition_ids={x['condition_id']}")[0]
         except Exception as e:
             print(f"positions: no Gamma market for {x['title']} ({e})")
             continue
-        p = dict(id=m['id'], cid=x['conditionId'], token=x['asset'], side='YES' if x['outcomeIndex'] == 0 else 'NO',
-                 outcome=x['outcome'], event=str(x.get('eventId') or ''), q=m['question'], name=x['title'].rstrip('?'),
-                 url=f"https://polymarket.com/event/{x['eventSlug']}", end=(m.get('endDate') or x.get('endDate') or '')[:10],
+        p = dict(id=m['id'], cid=x['condition_id'], token=x['token_id'], side='YES' if x['outcome_index'] == 0 else 'NO',
+                 outcome=x['outcome'], event=str(x.get('event_id') or ''), q=m['question'], name=x['title'].rstrip('?'),
+                 url=f"https://polymarket.com/event/{x['event_slug']}", end=(m.get('endDate') or x.get('end_date') or '')[:10],
                  fair=None, why='', tag='', added=str(TODAY), origin='position', prev_ask=None, prev_fair=None, held=held)
-        if x['asset'] in seeded:
-            p.update({k: seeded[x['asset']][k] for k in ('fair', 'why', 'name', 'tag', 'reviewed')})
+        if x['token_id'] in seeded:
+            p.update({k: seeded[x['token_id']][k] for k in ('fair', 'why', 'name', 'tag', 'reviewed')})
         p.update(reprice(p)[1])
         p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
         st['picks'].append(p)
         print(f"HELD NEW {p['id']} {p['name']}: {p['outcome']} {held['size']:,.0f} sh @ {held['avg']:.3f}, added to the book"
               f"{' with the seed fair value ' + str(p['fair']) if p['fair'] is not None else ''}")
-    live = {x['asset'] for x in pos}
+    live = {x['token_id'] for x in pos}
     for p in list(st['picks']):
         if p.get('held') and p['token'] not in live and not p.get('closed'):
             p['held'] = None
@@ -509,14 +520,14 @@ def cmd_smart(a):
     wallets = read(WALLETS)
     picks = [p for p in st['picks'] if not p.get('closed')]
 
-    def holders(p):
+    def holders(p):  # min_balance=1 keeps v1's floor: wallets with dust under one share are left out
         try:
-            return p['id'], get(f"{DATA}/holders?market={p['cid']}&limit=20", tries=3)
+            return p['id'], get(f"{DATA}/v2/holders?condition={p['cid']}&limit=20&min_balance=1", tries=3)['data']
         except Exception:
             return p['id'], None
     with ThreadPoolExecutor(4) as ex:
         H = dict(ex.map(holders, picks))
-    seen = {h['proxyWallet'] for v in H.values() if v for s in v for h in s['holders']} - {ADAPTER}
+    seen = {h['proxy_wallet'] for v in H.values() if v for s in v for h in s['holders']} - {ADAPTER}
     stale = str(TODAY - datetime.timedelta(days=WALLET_TTL_DAYS))
     todo = sorted(w for w in seen if w not in wallets) + sorted(w for w in seen if w in wallets and wallets[w][1] < stale)
     todo = todo[:MAX_WALLET_LOOKUPS]
@@ -534,12 +545,12 @@ def cmd_smart(a):
         names = {'YES': [], 'NO': []}
         for s in v:
             for h in s['holders']:
-                name = h.get('name') or h.get('pseudonym') or h['proxyWallet'][:8]
-                if h['proxyWallet'] == ADAPTER or name.lower() in MAKERS:
+                name = h.get('name') or h.get('pseudonym') or h['proxy_wallet'][:8]
+                if h['proxy_wallet'] == ADAPTER or name.lower() in MAKERS:
                     continue
-                pnl = (wallets.get(h['proxyWallet']) or [None])[0]
+                pnl = (wallets.get(h['proxy_wallet']) or [None])[0]
                 if pnl is not None and pnl >= SMART_PNL:
-                    sd = 'YES' if h.get('outcomeIndex') == 0 else 'NO'
+                    sd = 'YES' if h.get('outcome_index') == 0 else 'NO'
                     smart[sd] += float(h.get('amount') or 0)
                     names[sd].append(f'{name} (+${pnl / 1000:,.0f}k)')
         ours, theirs = p['side'], 'YES' if p['side'] == 'NO' else 'NO'
