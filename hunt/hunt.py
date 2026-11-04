@@ -261,14 +261,16 @@ def slim_event(e):
 
 
 def sweep_tag(tag):
-    out = []
-    for off in range(0, 2001, 100):  # Gamma rejects offsets above 2000
+    out, cursor = [], ''
+    while True:  # keyset paging: /events rejects offsets above 2000, this has no cap
         try:
-            r = get(f'{GAMMA}/events?tag_id={tag}&active=true&closed=false&limit=100&offset={off}', tries=3, timeout=30)
+            r = get(f'{GAMMA}/events/keyset?tag_id={tag}&active=true&closed=false&limit=100'
+                    + (f'&after_cursor={urllib.parse.quote(cursor)}' if cursor else ''), tries=3, timeout=30)
         except Exception:
             break
-        out += [slim_event(e) for e in r]
-        if len(r) < 100:
+        out += [slim_event(e) for e in r.get('events') or []]
+        cursor = r.get('next_cursor')
+        if not cursor or not r.get('events'):
             break
     return out
 
