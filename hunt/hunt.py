@@ -732,7 +732,7 @@ def row_html(i, p, e):
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
     smart = smart_cell(p)
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr>
+    return f'''<tr id="m{esc(p['id'])}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side}{badges}</div><p class="why">{esc(p['why'])}</p></td>
   <td class="num" data-k="Ask"><b>{px(p['ask'])}</b>{move}</td>
@@ -830,7 +830,7 @@ def render(st, main, extra, noask, held):
                      '. Books under $200 are token size; use resting bids.</p></div>')
     dropped = ''
     if st['dropped']:
-        dropped = ('<section><h2>Dropped today</h2><ul class="plain">' + ''.join(
+        dropped = ('<section id="dropped"><h2>Dropped today</h2><ul class="plain">' + ''.join(
             f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]} '
             f'{px(p.get("prev_ask"))} → {px(p.get("ask"))}</span><div class="li-body">{esc(p["reason"])}</div></li>'
             for p in st['dropped']) + '</ul></section>')
@@ -851,8 +851,13 @@ def render(st, main, extra, noask, held):
                      'Sorted by Per yr, lowest first.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
-    extra_html = (f'<section><h2>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h2>{table_html(extra)}</section>'
+    extra_html = (f'<section id="slower"><h2>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h2>{table_html(extra)}</section>'
                   if extra else '')
+    new = [p for p, _ in rows if p.get('added') == str(TODAY)]
+    jump = lambda text, n, href: f'<a href="{href}">{text}</a>' if n else text  # "new" goes to the first new row
+    new_href = f'#m{esc(new[0]["id"])}' if new else ''
+    changes = (f'<span class="v">{jump(len(new), len(new), new_href)} / {jump(len(st["dropped"]), len(st["dropped"]), "#dropped")}</span>'
+               f'<span class="s">{jump("new", len(new), new_href)} / {jump("dropped", len(st["dropped"]), "#dropped")}</span>')
     swept = st.get('swept') or {}
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -903,6 +908,8 @@ h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw,
 .stat .k {{ font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
 .stat .v {{ font-family: var(--mono); font-size: 24px; font-weight: 500; }}
 .stat .s {{ font-size: 12.5px; color: var(--muted); }}
+section, tr {{ scroll-margin-top: 16px; }}
+tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
 .stat.goldk {{ background: var(--gold-bg); padding-left: 20px; }}
 .stat.goldk .v {{ color: var(--gold); }}
 .boxes {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }}
@@ -990,15 +997,15 @@ footer p {{ margin: 0; }}
     <div class="stamp">Asks at {NOW:%-d %b %Y, %H:%M}<br>{swept.get('events', 0):,} events swept<br>{len(st['picks'])} picks in the book</div>
   </header>
   <section class="summary" aria-label="Summary">
-    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v">{len(main)}</span><span class="s">main list</span></div>
-    <div class="stat"><span class="k">Slower picks</span><span class="v">{len(extra)}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
+    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{len(main)}</a></span><span class="s"><a href="#main">main list</a></span></div>
+    <div class="stat"><span class="k">Slower picks</span><span class="v">{jump(len(extra), len(extra), "#slower")}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
     <div class="stat goldk"><span class="k">Earn 3.25% APR</span><span class="v">{n_hold}</span><span class="s">gold badge</span></div>
     <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
-    <div class="stat"><span class="k">Changes today</span><span class="v">{sum(1 for p, _ in rows if p.get('added') == str(TODAY))} / {len(st['dropped'])}</span><span class="s">new / dropped</span></div>
+    <div class="stat"><span class="k">Changes today</span>{changes}</div>
   </section>
   <div class="boxes">{''.join(boxes)}</div>
   {held_html}
-  <section><h2>Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year</h2>{main_html}</section>
+  <section id="main"><h2>Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year</h2>{main_html}</section>
   {extra_html}
   {noask_html}
   {dropped}
