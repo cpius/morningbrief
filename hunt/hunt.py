@@ -67,17 +67,21 @@ MAX_WALLET_LOOKUPS = 1500
 ADAPTER = '0xa5ef39c3d3e10d0b270233af41cac69796b12966'  # neg-risk adapter, holds NO everywhere
 MAKERS = {'xtxpleasecallme', 'armageddonrewardsbilly'}  # liquidity-reward makers sitting on many books
 
-# Politics/geo tag ids for the sweep (2026-10-29 set). Sports and crypto are skipped by tag slug.
+# Tag ids for the sweep: the politics/geo set of 2026-10-29, plus Finance, Culture and Weather (2026-11-07) for
+# nothing-ever-happens events outside politics (company exits, celebrity news, disasters). Sports and crypto are skipped
+# by tag slug; the NOISE regex drops the price, earnings, FX, rainfall and review-score markets these categories carry.
 TAGS = [2, 100265, 101970, 144, 1597, 154, 100410, 101206, 96, 303, 78, 180, 95, 100328, 126, 1628, 101794, 789, 514,
         102434, 100614, 245, 734, 1378, 100244, 518, 101522, 166, 867, 246, 192, 61, 849, 114, 956, 100185, 167, 159,
         101758, 100188, 872, 101270, 351, 520, 1382, 1370, 1383, 101272, 525, 191, 1373, 100861, 742, 101283, 101284,
-        101748, 181, 102436, 282, 439, 1401]
+        101748, 181, 102436, 282, 439, 1401,
+        120, 596, 84]  # finance, pop-culture (Culture), weather
 NOISE = re.compile(r'tweet|post |posts|say |says|mention|# of|number of|views|followers|up or down|price of|above|below|'
                    r'temperature|highest|lowest|close at|market cap|ETF|stock|IPO|FDV|launch a token|airdrop|box office|'
                    r'rotten|billboard|spotify|album|song|movie|grammy|oscar|emmy|award|youtube|tiktok|streamer|twitch|'
                    r'kick|MrBeast|word|ranking|top AI model|best AI|arena|benchmark|search|google trends|approval rating|'
                    r'net approval|polling average|odds|seats|vote share|margin|turnout|% of|percent|by how much|how many|'
-                   r'exact|between|range|\d+k|\$\d', re.I)
+                   r'exact|between|range|\d+k|\$\d|'
+                   r'earnings|sales.{0,12}growth|level will|hit __|close price|precipitation|metacritic|auction', re.I)
 
 
 # ---------------------------------------------------------------- plumbing
