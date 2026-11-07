@@ -6,14 +6,15 @@ The book (picks, fair values, reasons, notes) is carried from run to run in hunt
 from the live site, so the cloud routine needs no git push. The repo copy hunt/seed.json is the fallback.
 
     python3 hunt/hunt.py pull                 # load the book (live site, else seed), apply hunt/updates.json; new day: last ask becomes "previous"
-    python3 hunt/hunt.py scan                 # reprice every pick, sweep for new events, print the worklist
+    python3 hunt/hunt.py scan                 # reprice every pick, sweep, print the worklist, write the review batches
     python3 hunt/hunt.py list                 # the book, with ids and returns
     python3 hunt/hunt.py show <id>            # one pick plus its market rules
     python3 hunt/hunt.py peek <event id|slug|url>  # a candidate event: its open markets, prices and rules
     python3 hunt/hunt.py set <id> [--fair F] [--why W] [--name N] [--tag T]
     python3 hunt/hunt.py drop <id> --reason R
-    python3 hunt/hunt.py add <event id|slug|url> "<words from the question>" --side NO --fair F --why W [--name N] [--tag T]
+    python3 hunt/hunt.py add <event id|slug|url> "<words from the question>|<market id>" --side NO --fair F --why W [--name N] [--tag T]
     python3 hunt/hunt.py note "<one line on what changed>"
+    python3 hunt/hunt.py ingest               # full review: read the subagents' fair values, print MISSING/FLAG/BOOK DIFF
     python3 hunt/hunt.py smart                # smart-money share from top holders and leaderboard PnL
     python3 hunt/hunt.py build                # write site/hunt/{index.html,state.json,wallets.json,summary.json}
 
@@ -25,9 +26,15 @@ The wallet's open positions are part of the book too. `scan` marks picks the wal
 that is missing, with no fair value yet (it prints FAIR NEEDED; set one with `set`). For a held position the page
 shows "hold vs sell": fair / best bid - 1 plus the reward, i.e. what holding to resolution should earn over selling
 into the bid now. Held positions are never auto-dropped; they leave the book when sold, unless they are also hunt picks.
+
+Full review: every candidate market (about 2,000 in 1,000 events) is researched every day, not only new ones. `scan`
+splits them into hunt/work/batches/bNNN.json, nearest end first; the routine gives each batch to a research subagent,
+which writes its probability of YES per market to hunt/work/reviews/bNNN.json; `ingest` reads those into the book's
+`reviews` (kept for the next day, so the next review can look only at news since) and lists the markets where either
+side clears the main list's bars at today's prices. The routine verifies those itself before it `add`s them.
 Only the standard library is used.
 """
-import argparse, datetime, html, json, os, re, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, glob, html, json, os, re, shutil, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
@@ -40,6 +47,8 @@ WORK = os.path.join(HERE, 'work')
 STATE = os.path.join(WORK, 'state.json')
 WALLETS = os.path.join(WORK, 'wallets.json')
 CANDIDATES = os.path.join(WORK, 'candidates.txt')
+BATCHES = os.path.join(WORK, 'batches')  # full review: scan writes one file per research subagent here ...
+REVIEWS = os.path.join(WORK, 'reviews')  # ... each subagent writes its fair values here, and ingest reads them
 SEED = os.path.join(HERE, 'seed.json')
 SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
 UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull
@@ -56,8 +65,10 @@ MAIN_ANN = 0.30         # main list: at least this much a year
 MIN_ANN = 0.10          # appendix; below this a year a pick is dropped at build
 MIN_EDGE = 0.03         # also dropped below this to resolution: inside a fair value's own error
 ANN_MIN_DAYS = 14       # annualize over at least this many days: the money doesn't go into the next bet the next day
-SHORT_DAYS = 45         # scan re-lists already-seen events ending this soon: small edges, big annualized returns
-SHORT_MIN_LIQ = 10_000  # ... if politics/geopolitics with at least this much liquidity in those markets
+BATCH_EVENTS = 15       # full review: events per research subagent ...
+BATCH_MARKETS = 30      # ... and at most this many markets (a long ladder gets a batch of its own)
+REVIEW_KEEP_DAYS = 30   # forget a market's review once it is this old (the market stopped being a candidate)
+REVIEW_GAP = 0.05       # a review must differ from the mid (FLAG) or from a pick's fair value (BOOK DIFF) by this much
 REVIEW_MOVE = 0.05      # ask moved this much since the last run -> news check
 SOON_DAYS = 14          # ends this soon -> news check
 SMART_PNL = 50_000      # all-time PnL that counts as smart money
@@ -254,7 +265,9 @@ def reprice(p):
 
 
 def slim_event(e):
-    return dict(id=e['id'], title=e.get('title', ''), slug=e.get('slug', ''),
+    rules = next((m.get('description') for m in e.get('markets') or [] if not m.get('closed') and m.get('description')),
+                 e.get('description')) or ''
+    return dict(id=e['id'], title=e.get('title', ''), slug=e.get('slug', ''), rules=rules.strip()[:2500],
                 tags=[t.get('slug') for t in e.get('tags') or []],
                 markets=[dict(id=m.get('id'), q=m.get('question', ''), g=m.get('groupItemTitle') or '',
                               bid=m.get('bestBid'), ask=m.get('bestAsk'), end=(m.get('endDate') or '')[:10],
@@ -337,6 +350,55 @@ def sync_positions(st):
                   f"{', removed from the book' if p.get('origin') == 'position' else ', stays in the hunt'}")
 
 
+def write_batches(st, events, cands, order, seen):
+    """Split today's candidates into files for the full review's research subagents, nearest end first.
+
+    Each market carries its last review and, if it is in the book, the book's side and fair value, so the subagent can
+    look only for news since then. A rerun the same day rewrites the batches but keeps today's results (ingest
+    matches them by market id); results from an earlier day are cleared.
+    """
+    idx_path = os.path.join(BATCHES, 'index.json')
+    if os.path.exists(idx_path) and read(idx_path).get('day') != str(TODAY):
+        shutil.rmtree(REVIEWS, ignore_errors=True)
+    shutil.rmtree(BATCHES, ignore_errors=True)
+    os.makedirs(BATCHES)
+    os.makedirs(REVIEWS, exist_ok=True)
+    book = {p['id']: p for p in st['picks']}
+    reviews = st.get('reviews') or {}
+    groups, cur, n = [], [], 0
+    for i in order:
+        k = len(cands[i])
+        if cur and (len(cur) >= BATCH_EVENTS or n + k > BATCH_MARKETS):
+            groups.append(cur)
+            cur, n = [], 0
+        cur.append(i)
+        n += k
+    if cur:
+        groups.append(cur)
+    out = []
+    for g, ids in enumerate(groups, 1):
+        rows = []
+        for i in ids:
+            e = events[i]
+            ms = []
+            for m in cands[i]:
+                r, p = reviews.get(m['id']), book.get(m['id'])
+                ms.append(dict(id=m['id'], question=m['q'], option=m['g'] or None, yes_bid=float(m['bid']),
+                               yes_ask=float(m['ask']), end=m['end'], days=m['days'], liquidity=round(m['liq']), apr=m['hold'],
+                               last_review=dict(fair_yes=r['fair'], why=r['why'], day=r['day']) if r else None,
+                               book=dict(side=p['side'], fair=p.get('fair'), why=p.get('why')) if p else None))
+            rows.append(dict(event=i, title=e['title'], url=f"https://polymarket.com/event/{e['slug']}",
+                             new=i not in seen, rules=e.get('rules', ''), markets=ms))
+        name = f'b{g:03d}'
+        write(os.path.join(BATCHES, name + '.json'), rows)
+        out.append(dict(id=name, file=os.path.relpath(os.path.join(BATCHES, name + '.json'), ROOT),
+                        result=os.path.relpath(os.path.join(REVIEWS, name + '.json'), ROOT),
+                        events=len(rows), markets=sum(len(r['markets']) for r in rows),
+                        first_end=min(m['end'] for r in rows for m in r['markets'])))
+    write(idx_path, dict(day=str(TODAY), batches=out))
+    return out
+
+
 def cmd_scan(a):
     st = load()
     picks = st['picks']
@@ -369,23 +431,17 @@ def cmd_scan(a):
         apr = ' APR' if any(m['hold'] for m in e['markets']) else ''
         return (f"{e['id']} [{min(m['days'] for m in ms)}d L${sum(m['liq'] for m in ms) / 1000:.0f}k{apr}] {e['title'][:80]}"
                 f" :: {mkts(ms)}")
-    new = [e for e in events.values() if e['id'] not in seen and candidate_markets(e)]
-    lines = [line(e, candidate_markets(e)) for e in sorted(new, key=lambda e: min(m['days'] for m in candidate_markets(e)))]
-    # Seen events are skipped above, but a short-dated market can pay a big yearly rate on a small edge, so re-list those
-    in_book = {p['id'] for p in picks}
-    soon = {e['id']: ms for e in events.values() if e['id'] in seen and {'politics', 'geopolitics'} & set(e['tags'])
-            for ms in [[m for m in candidate_markets(e) if m['days'] <= SHORT_DAYS and m['id'] not in in_book]]
-            if sum(m['liq'] for m in ms) >= SHORT_MIN_LIQ}
-    soon_lines = [line(events[i], ms) for i, ms in sorted(soon.items(), key=lambda kv: min(m['days'] for m in kv[1]))]
+    # Every candidate, seen before or not, goes to the full review: nearest end first, so a run cut short has done the
+    # short-dated ones, where a small edge is a big yearly rate.
+    cands = {i: ms for i, e in events.items() for ms in [candidate_markets(e)] if ms}
+    order = sorted(cands, key=lambda i: (min(m['days'] for m in cands[i]), i))
+    new = [i for i in order if i not in seen]
     os.makedirs(WORK, exist_ok=True)
     with open(CANDIDATES, 'w') as fh:
-        fh.write(f'# New events since the last sweep ({len(new)}), nearest end first. Format: '
-                 'event id [days to first end, liquidity, APR = pays the holding reward] title :: market YES-mid; ...\n')
-        fh.write('\n'.join(lines) + '\n')
-        fh.write(f'\n# Seen before, not in the book, ending within {SHORT_DAYS} days (politics/geo, liquidity ${SHORT_MIN_LIQ // 1000}k+; '
-                 f'{len(soon)}), nearest end first. '
-                 'Small edges here are big yearly rates.\n')
-        fh.write('\n'.join(soon_lines) + '\n')
+        fh.write(f'# All {len(order)} candidate events ({len(new)} new since the last sweep, marked NEW), nearest end first. '
+                 'Format: event id [days to first end, liquidity, APR = pays the holding reward] title :: market YES-mid; ...\n')
+        fh.write('\n'.join(('NEW ' if i not in seen else '') + line(events[i], cands[i]) for i in order) + '\n')
+    batches = write_batches(st, events, cands, order, seen)
     st['seen'] = sorted(seen | set(events))
     st['hold_events'] = len(hold_events)
     st['swept'] = dict(events=len(events), markets=sum(len(e['markets']) for e in events.values()))
@@ -425,7 +481,9 @@ def cmd_scan(a):
             ret = f"{e['tot'] * 100:+.0f}% ({e['ann'] * 100:+,.0f}% a year)" if e else '–'
             print(f"REVIEW {p['id']} [{'; '.join(why)}] {p['name']} | {p['side']} ask {prev}{ask} fair {p['fair']:.2f} return {ret}"
                   f"{' | HELD' if p.get('held') else ''}")
-    print(f'NEW {len(new)} new candidate events, {len(soon)} short-dated seen ones -> {os.path.relpath(CANDIDATES, ROOT)}')
+    print(f'CANDIDATES {len(order)} events ({len(new)} new) -> {os.path.relpath(CANDIDATES, ROOT)}')
+    print(f"BATCHES {len(batches)} for the full review ({sum(b['events'] for b in batches)} events, "
+          f"{sum(b['markets'] for b in batches)} markets) -> {os.path.relpath(BATCHES, ROOT)}/index.json")
 
 
 # ---------------------------------------------------------------- edit the book
@@ -495,7 +553,8 @@ def cmd_add(a):
     st = load()
     e = event_by_ref(a.event)
     words = a.question.lower().split()
-    ms = [m for m in e.get('markets') or [] if not m.get('closed') and all(w in m['question'].lower() for w in words)]
+    ms = ([m for m in e.get('markets') or [] if not m.get('closed') and m['id'] == a.question.strip()] or  # a market id
+          [m for m in e.get('markets') or [] if not m.get('closed') and all(w in m['question'].lower() for w in words)])
     if len(ms) != 1:
         print(f"{len(ms)} open markets in event {e['id']} ({e.get('title')}) match {a.question!r}:")
         for m in e.get('markets') or []:
@@ -531,6 +590,90 @@ def cmd_note(a):
     st['notes'].append(a.text)
     write(STATE, st)
     print(f"{len(st['notes'])} notes")
+
+
+# ---------------------------------------------------------------- full review
+
+def cmd_ingest(a):
+    """Read the research subagents' fair values (hunt/work/reviews/*.json) into the book and print what to act on.
+
+    Each result file is a JSON list of {"market": <market id>, "fair": <probability of YES>, "why": "<dated reason>"}.
+    Prints MISSING for batches with markets not reviewed today (rerun those), FLAG for markets outside the book where
+    either side clears the main list's bars at today's prices, and BOOK DIFF where a review disagrees with a pick.
+    """
+    st = load()
+    idx_path = os.path.join(BATCHES, 'index.json')
+    if not os.path.exists(idx_path) or read(idx_path).get('day') != str(TODAY):
+        sys.exit('no batches from today: run `python3 hunt/hunt.py scan` first')
+    wanted = {}  # market id -> (batch id, event row, market row)
+    for b in read(idx_path)['batches']:
+        for e in read(os.path.join(ROOT, b['file'])):
+            for m in e['markets']:
+                wanted[str(m['id'])] = (b['id'], e, m)
+    reviews = st.setdefault('reviews', {})
+    got, bad = 0, []
+    for f in sorted(glob.glob(os.path.join(REVIEWS, '*.json'))):
+        try:
+            rows = read(f)
+        except Exception as ex:
+            bad.append(f'{os.path.basename(f)}: not JSON ({ex})')
+            continue
+        for r in rows if isinstance(rows, list) else [rows]:
+            try:
+                mid, fair, why = str(r['market']), float(r['fair']), str(r['why']).strip()
+            except Exception:
+                bad.append(f'{os.path.basename(f)}: {str(r)[:120]}')
+                continue
+            if mid not in wanted or not 0 <= fair <= 1 or not why:
+                bad.append(f'{os.path.basename(f)}: {str(r)[:120]}')
+                continue
+            reviews[mid] = dict(fair=round(min(max(fair, 0.001), 0.999), 4), why=why, day=str(TODAY),
+                                event=wanted[mid][1]['event'])
+            got += 1
+    cutoff = str(TODAY - datetime.timedelta(days=REVIEW_KEEP_DAYS))
+    for mid in [k for k, r in reviews.items() if r['day'] < cutoff]:
+        del reviews[mid]
+
+    today = {mid: reviews[mid] for mid in wanted if reviews.get(mid, {}).get('day') == str(TODAY)}
+    missing = Counter(b for mid, (b, _, _) in wanted.items() if mid not in today)
+    size = Counter(b for b, _, _ in wanted.values())
+    book = {p['id']: p for p in st['picks']}
+    flags, diffs = [], []
+    for mid, r in today.items():
+        _, e, m = wanted[mid]
+        p = book.get(mid)
+        if p:
+            if p.get('fair') is not None:
+                ours = r['fair'] if p['side'] == 'YES' else 1 - r['fair']
+                if abs(ours - p['fair']) >= REVIEW_GAP:
+                    diffs.append((p, ours, r))
+            continue
+        if abs(r['fair'] - (m['yes_bid'] + m['yes_ask']) / 2) < REVIEW_GAP:  # a few cents off the mid is the reviewer's noise
+            continue
+        for side, fair, ask in (('YES', r['fair'], m['yes_ask']), ('NO', 1 - r['fair'], 1 - m['yes_bid'])):
+            if not 0 < ask < 1:
+                continue
+            x = econ(dict(ask=ask, fair=fair, end=m['end'], hold=m['apr']))
+            if x['ann'] >= MAIN_ANN and x['tot'] >= MIN_EDGE:
+                flags.append((x, side, ask, fair, e, m, r))
+    flags.sort(key=lambda f: -f[0]['ann'])
+    st['review'] = dict(day=str(TODAY), markets=len(today), of=len(wanted),
+                        events=len({wanted[mid][1]['event'] for mid in today}),
+                        of_events=len({e['event'] for _, e, _ in wanted.values()}), flags=len(flags), diffs=len(diffs))
+    write(STATE, st)
+
+    rv = st['review']
+    print(f"ingest: {got} results read; reviewed today: {rv['markets']} of {rv['of']} markets in {rv['events']} of "
+          f"{rv['of_events']} events; {len(flags)} FLAG, {len(diffs)} BOOK DIFF, {len(bad)} rejected")
+    for b in sorted(missing):
+        print(f'MISSING {b}: {missing[b]} of {size[b]} markets without a review today (rerun this batch)')
+    for line in bad[:20]:
+        print(f'REJECTED {line}')
+    for x, side, ask, fair, e, m, r in flags:
+        print(f"FLAG {x['ann'] * 100:+,.0f}%/yr {x['tot'] * 100:+.0f}% {side} ask ~{ask:.3g} fair {fair:.3f} ends {m['end']}"
+              f"{' APR' if m['apr'] else ''} | add {e['event']} {m['id']} | {m['question']} | {r['why']}")
+    for p, ours, r in diffs:
+        print(f"BOOK DIFF {p['id']} {p['name']}: book {p['side']} fair {p['fair']:.3f}, review {ours:.3f} | {r['why']}")
 
 
 # ---------------------------------------------------------------- smart money
@@ -655,7 +798,8 @@ def cmd_build(a):
                               for p, h in held},
                    held=len(held), held_above=[p['name'] for p, h in held if h and h['tot'] < 0],
                    held_unvalued=sum(1 for p, _ in held if p.get('fair') is None),
-                   held_edge=round(sum(h['edge'] for _, h in held if h), 2))
+                   held_edge=round(sum(h['edge'] for _, h in held if h), 2),
+                   review=st['review'] if (st.get('review') or {}).get('day') == str(TODAY) else None)
     write(os.path.join(SITE, 'summary.json'), summary)
     print(f"built site/hunt/index.html: {len(main)} main, {len(extra)} appendix, {len(noask)} without an ask, "
           f"{summary['hold']} earn the APR reward, {summary['new']} new today, {len(st['dropped'])} dropped, "
@@ -863,6 +1007,9 @@ def render(st, main, extra, noask, held):
     changes = (f'<span class="v">{jump(len(new), len(new), new_href)} / {jump(len(st["dropped"]), len(st["dropped"]), "#dropped")}</span>'
                f'<span class="s">{jump("new", len(new), new_href)} / {jump("dropped", len(st["dropped"]), "#dropped")}</span>')
     swept = st.get('swept') or {}
+    rv = st.get('review') or {}
+    reviewed = (f"<br>{rv['markets']:,} of {rv['of']:,} candidate markets researched today" if rv.get('day') == str(TODAY)
+                else '')
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -998,7 +1145,7 @@ footer p {{ margin: 0; }}
       geopolitics, ranked by annualized return: a small edge that pays out in weeks beats a big one that takes years.
       Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
     </div>
-    <div class="stamp">Asks at {NOW:%-d %b %Y, %H:%M}<br>{swept.get('events', 0):,} events swept<br>{len(st['picks'])} picks in the book</div>
+    <div class="stamp">Asks at {NOW:%-d %b %Y, %H:%M}<br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
   </header>
   <section class="summary" aria-label="Summary">
     <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{len(main)}</a></span><span class="s"><a href="#main">main list</a></span></div>
@@ -1049,6 +1196,7 @@ def main():
     s.add_argument('--why', required=True); s.add_argument('--name'); s.add_argument('--tag'); s.add_argument('--end')
     s.set_defaults(f=cmd_add)
     s = sub.add_parser('note'); s.add_argument('text'); s.set_defaults(f=cmd_note)
+    sub.add_parser('ingest').set_defaults(f=cmd_ingest)
     sub.add_parser('smart').set_defaults(f=cmd_smart)
     sub.add_parser('build').set_defaults(f=cmd_build)
     a = ap.parse_args()
