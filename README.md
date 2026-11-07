@@ -14,7 +14,8 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   Authorization header for api.vercel.com. To test locally, pipe `python3 deploy.py --preview --body-only` into
   `vercel api "/v13/deployments?teamId=team_45ZNkd6F5HMXNUu6jGjrKr44" -X POST --input -`.
 - A daily Claude Code cloud routine (environment `morningbrief`) runs the script, researches the missing movers,
-  runs the hunt, reruns the script and deploys.
+  updates the hunt's book, reruns the script and deploys. It then runs the hunt's full review (below), which takes
+  a few hours, and builds and deploys again, so a slow or failed review never holds up the brief.
 
 ## Mispricing hunt (`hunt/`)
 
@@ -26,15 +27,35 @@ return × 365 / days (simple, with days counted as at least 14), so a small edge
 that takes years. The main list is 30% a year and up, the appendix 10–30%.
 
     python3 hunt/hunt.py pull     # book from the live site's /hunt/state.json, else hunt/seed.json
-    python3 hunt/hunt.py scan     # reprice, sweep ~60 politics/geo tags; prints RESOLVED/REVIEW lines, writes hunt/work/candidates.txt
-                                  # (new events, plus seen ones ending within 45 days)
+    python3 hunt/hunt.py scan     # reprice, sweep ~64 tags; prints RESOLVED/REVIEW lines, writes hunt/work/candidates.txt
+                                  # (every candidate event, new ones marked) and the full review's batches
     python3 hunt/hunt.py peek <event>   # a candidate event: markets, prices, rules
     python3 hunt/hunt.py set|drop|add|note ...   # judgement: fair values, reasons, new picks, "what changed" lines
+    python3 hunt/hunt.py ingest   # full review: read the research subagents' fair values, print MISSING/FLAG/BOOK DIFF
     python3 hunt/hunt.py smart    # smart-money share (top-20 holders scored by leaderboard PnL)
     python3 hunt/hunt.py build    # site/hunt/{index.html,state.json,wallets.json,summary.json}
 
+### Full review
+
+Every candidate market is researched every day, not only new events: about 2,200 markets in about 970 events
+(7 Nov 2026). A candidate is a live market with a spread of 15¢ or less, a YES price of 5–95¢ and 4–900 days to go,
+in an event under one of the swept tags that isn't sports, crypto or noise (`candidate_markets`, `NOISE`).
+
+1. `scan` splits them into `hunt/work/batches/bNNN.json` (15 events or 30 markets each, nearest end first) and lists
+   them in `hunt/work/batches/index.json`. Each market carries its rules, prices, its last review and, if it is in the
+   book, the book's side and fair value.
+2. The routine gives each batch to a research subagent (Sonnet, several at a time). It reads the rules, searches the
+   news (since the last review, if there is one) and writes `hunt/work/reviews/bNNN.json`:
+   `[{"market": "<id>", "fair": <probability of YES>, "why": "<dated reason>"}, ...]`.
+3. `ingest` reads them into the book's `reviews` (kept 30 days, so the next day's review can look only at what's new)
+   and prints `MISSING` batches to rerun, `FLAG` lines for markets outside the book where either side clears the main
+   list's bars at today's prices (30% a year and +3% to resolution, and at least 5¢ off the mid), and `BOOK DIFF` where a review disagrees with a
+   pick's fair value by 5¢ or more. The routine checks each FLAG itself before it `add`s it (`add <event> <market id>`).
+
+The page's stamp shows how many candidate markets were researched that day.
+
 State lives in the deployment, not in git: `build` writes `site/hunt/state.json` (picks, fair values, notes, seen
-event ids) and `site/hunt/wallets.json` (leaderboard PnL cache), `deploy.py` publishes them, and the next `pull`
+event ids, the full review's last fair value per market) and `site/hunt/wallets.json` (leaderboard PnL cache), `deploy.py` publishes them, and the next `pull`
 reads them back. A failed run therefore leaves the last good book in place. `hunt/seed.json` is the 30 Oct 2026
 book, used only when the live copy is missing. Working files go to `hunt/work/` (ignored).
 
