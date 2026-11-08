@@ -957,25 +957,34 @@ def held_table_html(held):
 def render(st, main, extra, noask, held):
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
-    clusters = Counter(p.get('tag') for p, _ in rows if p.get('tag'))
-    clusters = [f'{esc(t)} ({n})' for t, n in clusters.most_common() if n >= 2]
     boxes = []
     if st['notes']:
-        boxes.append('<div class="box warn"><h3>What changed</h3><ul>' +
+        boxes.append('<div class="box warn" id="changes"><h3>What changed</h3><ul>' +
                      ''.join(f'<li>{esc(n)}</li>' for n in st['notes']) + '</ul></div>')
     if st['resolved']:
-        boxes.append('<div class="box"><h3>Resolved since the last run</h3><ul>' + ''.join(
+        boxes.append('<div class="box" id="resolved"><h3>Resolved since the last run</h3><ul>' + ''.join(
             f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a>: our {p["side"]} '
             f'<b class="{"up" if p["won"] else "down"}">{"won" if p["won"] else "lost"}</b>'
             f'{" (held)" if p.get("held") else ""}</li>' for p in st['resolved']) +
             '</ul></div>')
-    boxes.append(f'<div class="box gold"><h3>APR rewards</h3><p>Polymarket pays a 3.25% annual holding reward on the '
-                 f'mid-price value of YES and NO positions in {st.get("hold_events", "the")} eligible events, sampled hourly '
-                 f'and paid daily. {n_hold} picks below earn it (gold badge); their return includes the reward to resolution, '
-                 'assuming the rate holds. It matters most on long-dated NO carry: a 2028 NO earns about 7% from the reward alone.</p></div>')
-    if clusters:
-        boxes.append('<div class="box"><h3>Correlation clusters</h3><p>Size each as one bet: ' + ' · '.join(clusters) +
-                     '. Books under $200 are token size; use resting bids.</p></div>')
+    boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
+    # the tab bar: one tab per section on the page, in page order, with its count
+    tabs = [('Overview', 'top', None)]
+    if st['notes']:
+        tabs.append(('What changed', 'changes', None))
+    if st['resolved']:
+        tabs.append(('Resolved', 'resolved', len(st['resolved'])))
+    if held:
+        tabs.append(('Positions', 'positions', len(held)))
+    tabs.append(('Main list', 'main', len(main)))
+    if extra:
+        tabs.append(('Slower', 'slower', len(extra)))
+    if noask:
+        tabs.append(('No sellers', 'noask', len(noask)))
+    if st['dropped']:
+        tabs.append(('Dropped', 'dropped', len(st['dropped'])))
+    tabs_html = ('<nav class="tabs" aria-label="Sections">' + ''.join(
+        f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>')
     dropped = ''
     if st['dropped']:
         dropped = ('<section id="dropped"><h2>Dropped today</h2><ul class="plain">' + ''.join(
@@ -984,7 +993,7 @@ def render(st, main, extra, noask, held):
             for p in st['dropped']) + '</ul></section>')
     noask_html = ''
     if noask:
-        noask_html = ('<section><h2>No sellers today</h2><p class="note">Still in the book, but nobody is offering our side, '
+        noask_html = ('<section id="noask"><h2>No sellers today</h2><p class="note">Still in the book, but nobody is offering our side, '
                       'so there is no return to show.</p><ul class="plain">' + ''.join(
                           f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
                           f'{p["fair"]:.2f}</span></li>' for p in noask) + '</ul></section>')
@@ -1059,17 +1068,29 @@ h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw,
 .stat .k {{ font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
 .stat .v {{ font-family: var(--mono); font-size: 24px; font-weight: 500; }}
 .stat .s {{ font-size: 12.5px; color: var(--muted); }}
-section, tr {{ scroll-margin-top: 16px; }}
+section, tr, header, .box {{ scroll-margin-top: 64px; }}
+@media (prefers-reduced-motion: no-preference) {{ html {{ scroll-behavior: smooth; }} }}
+.tabs {{ position: sticky; top: 0; z-index: 10; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none;
+         margin: 0 -28px; padding: 0 16px; background: var(--ground); border-bottom: 1px solid var(--rule); }}
+.tabs::-webkit-scrollbar {{ display: none; }}
+.tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px; margin-bottom: -1px;
+           font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
+.tabs a:hover {{ color: var(--ink); }}
+.tabs a[aria-current] {{ color: var(--ink); border-bottom-color: var(--accent); }}
+.tabs a span {{ font-family: var(--mono); font-size: 11.5px; font-weight: 500; padding: 0 6px; border-radius: 999px;
+                background: var(--surface-2); color: var(--muted); }}
+.tabs a[aria-current] span {{ background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }}
 tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
 .stat.goldk {{ background: var(--gold-bg); padding-left: 20px; }}
 .stat.goldk .v {{ color: var(--gold); }}
 .boxes {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }}
 .box {{ border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 8px 8px 0; padding: 12px 16px; font-size: 14px; }}
 .box.warn {{ border-color: var(--warn-ink); }}
-.box.gold {{ border-color: var(--gold-line); background: var(--gold-bg); }}
 .box h3 {{ margin: 0 0 4px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }}
 .box p {{ margin: 0; }}
 .box ul {{ margin: 0; padding-left: 18px; display: grid; gap: 4px; }}
+.box.warn ul {{ display: block; columns: 2 380px; column-gap: 40px; }}  /* the notes run two columns when the box is wide */
+.box.warn li {{ break-inside: avoid; margin-bottom: 6px; }}
 h2 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
 .table-box {{ background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }}
 table.hunt {{ width: 100%; border-collapse: collapse; }}
@@ -1105,6 +1126,7 @@ footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: gri
 footer p {{ margin: 0; }}
 @media (max-width: 720px) {{
   .wrap {{ padding: 24px 16px 48px; }}
+  .tabs {{ margin: 0 -16px; padding: 0 4px; }}
   .stamp {{ text-align: left; }}
   .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
   .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
@@ -1128,7 +1150,7 @@ footer p {{ margin: 0; }}
            --gold: #8F6200; --gold-bg: #FFF4D1; --gold-line: #E9C46A; --up: #177A47; --down: #BD3434; --accent: #2F4BCF; }}
   body {{ font-size: 9pt; }}
   .wrap {{ max-width: none; padding: 0; gap: 12px; }}
-  .eyebrow a {{ display: none; }}
+  .eyebrow a, .tabs {{ display: none; }}
   td {{ padding: 5px 6px; }} th {{ padding: 6px; }}
   td.mkt {{ min-width: 0; width: 42%; }}
   tr {{ break-inside: avoid; }}
@@ -1137,7 +1159,7 @@ footer p {{ margin: 0; }}
 }}
 </style></head>
 <body><div class="wrap">
-  <header>
+  <header id="top">
     <div>
       <div class="eyebrow"><a href="/">← Morning brief</a> · Polymarket</div>
       <h1>Mispricing hunt</h1>
@@ -1154,7 +1176,8 @@ footer p {{ margin: 0; }}
     <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
     <div class="stat"><span class="k">Changes today</span>{changes}</div>
   </section>
-  <div class="boxes">{''.join(boxes)}</div>
+  {tabs_html}
+  {boxes_html}
   {held_html}
   <section id="main"><h2>Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year</h2>{main_html}</section>
   {extra_html}
@@ -1174,7 +1197,40 @@ footer p {{ margin: 0; }}
     <p>Holding-reward eligibility is Gamma's <i>holdingRewardsEnabled</i> flag, read today. Prices from Polymarket's CLOB.
     Rebuilt every morning by the morning brief routine.</p>
   </footer>
-</div></body></html>
+</div>
+<script>
+// Light up the tab of the section being read. A clicked tab stays lit until the reader scrolls themselves,
+// since a short last section can never scroll up to the bar.
+(() => {{
+  const nav = document.querySelector('.tabs');
+  if (!nav) return;
+  const links = [...nav.querySelectorAll('a')];
+  const targets = links.map(a => document.getElementById(a.hash.slice(1)));
+  let pinned = null, queued = false;
+  const light = i => {{
+    links.forEach((a, j) => j === i ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'));
+    const a = links[i], l = a.offsetLeft, r = l + a.offsetWidth;  // keep the lit tab in view on a narrow screen
+    if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = l - 8;
+  }};
+  const update = () => {{
+    queued = false;
+    if (pinned !== null) return light(pinned);
+    const line = nav.getBoundingClientRect().bottom + 32;
+    let i = 0;
+    targets.forEach((t, j) => {{ if (t && t.getBoundingClientRect().top <= line) i = j; }});
+    if (nav.getBoundingClientRect().top > 1) i = 0;  // the bar hasn't stuck yet: still on the overview
+    else if (scrollY > 0 && innerHeight + scrollY >= document.documentElement.scrollHeight - 2) i = links.length - 1;
+    light(i);
+  }};
+  links.forEach((a, j) => a.addEventListener('click', () => {{ pinned = j; light(j); }}));
+  ['wheel', 'touchstart', 'keydown'].forEach(ev => addEventListener(ev, () => {{ pinned = null; }}, {{ passive: true }}));
+  addEventListener('scroll', () => {{ if (!queued) {{ queued = true; requestAnimationFrame(update); }} }}, {{ passive: true }});
+  const hashed = links.findIndex(a => a.hash === location.hash);
+  if (hashed >= 0) pinned = hashed;
+  update();
+}})();
+</script>
+</body></html>
 '''
 
 
