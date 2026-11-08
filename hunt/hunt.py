@@ -28,10 +28,11 @@ shows "hold vs sell": fair / best bid - 1 plus the reward, i.e. what holding to 
 into the bid now. Held positions are never auto-dropped; they leave the book when sold, unless they are also hunt picks.
 
 Full review: every candidate market (about 2,000 in 1,000 events) is researched every day, not only new ones. `scan`
-splits them into hunt/work/batches/bNNN.json, nearest end first; the routine gives each batch to a research subagent,
-which writes its probability of YES per market to hunt/work/reviews/bNNN.json; `ingest` reads those into the book's
-`reviews` (kept for the next day, so the next review can look only at news since) and lists the markets where either
-side clears the main list's bars at today's prices. The routine verifies those itself before it `add`s them.
+splits them into hunt/work/batches/bNNN.json, nearest end first, with the series history of recurring events; the
+routine gives each batch to a research subagent, which writes its probability of YES per market (and, where the market
+is decided well before its end date, the expected day) to hunt/work/reviews/bNNN.json; `ingest` reads those into the
+book's `reviews` (kept for the next day, so the next review can look only at news since) and lists the markets where
+either side clears the main list's bars at today's prices. The routine verifies those itself before it `add`s them.
 Only the standard library is used.
 """
 import argparse, datetime, glob, html, json, os, re, shutil, sys, threading, time, urllib.error, urllib.parse, urllib.request
@@ -80,19 +81,23 @@ MAKERS = {'xtxpleasecallme', 'armageddonrewardsbilly'}  # liquidity-reward maker
 
 # Tag ids for the sweep: the politics/geo set of 2026-10-29, plus Finance, Culture and Weather (2026-11-07) for
 # nothing-ever-happens events outside politics (company exits, celebrity news, disasters). Sports and crypto are skipped
-# by tag slug; the NOISE regex drops the price, earnings, FX, rainfall and review-score markets these categories carry.
+# by tag slug; the NOISE regexes drop the price, earnings, FX, rainfall and review-score markets these categories carry.
 TAGS = [2, 100265, 101970, 144, 1597, 154, 100410, 101206, 96, 303, 78, 180, 95, 100328, 126, 1628, 101794, 789, 514,
         102434, 100614, 245, 734, 1378, 100244, 518, 101522, 166, 867, 246, 192, 61, 849, 114, 956, 100185, 167, 159,
         101758, 100188, 872, 101270, 351, 520, 1382, 1370, 1383, 101272, 525, 191, 1373, 100861, 742, 101283, 101284,
         101748, 181, 102436, 282, 439, 1401,
         120, 596, 84]  # finance, pop-culture (Culture), weather
-NOISE = re.compile(r'tweet|post |posts|say |says|mention|# of|number of|views|followers|up or down|price of|above|below|'
-                   r'temperature|highest|lowest|close at|market cap|ETF|stock|IPO|FDV|launch a token|airdrop|box office|'
-                   r'rotten|billboard|spotify|album|song|movie|grammy|oscar|emmy|award|youtube|tiktok|streamer|twitch|'
-                   r'kick|MrBeast|word|ranking|top AI model|best AI|arena|benchmark|search|google trends|approval rating|'
-                   r'net approval|polling average|odds|seats|vote share|margin|turnout|% of|percent|by how much|how many|'
-                   r'exact|between|range|\d+k|\$\d|'
-                   r'earnings|sales.{0,12}growth|level will|hit __|close price|precipitation|metacritic|auction', re.I)
+NOISE_WORDS = (r'tweet|post |posts|say |says|mention|views|followers|up or down|price of|above|below|'
+               r'temperature|highest|lowest|close at|market cap|ETF|stock|IPO|FDV|launch a token|airdrop|box office|'
+               r'rotten|billboard|spotify|album|song|movie|grammy|oscar|emmy|award|youtube|tiktok|streamer|twitch|'
+               r'kick|MrBeast|word|ranking|top AI model|best AI|arena|benchmark|search|google trends|approval rating|'
+               r'net approval|polling average|odds|seats|vote share|margin|turnout|% of|percent|by how much|'
+               r'exact|between|range|\d+k|\$\d|'
+               r'earnings|sales.{0,12}growth|level will|hit __|close price|precipitation|metacritic|auction')
+# Count words are noise in a market's question but not in its event's title: "How many Starship launches reach space
+# in 2026?" or "How many Trump vetoes ...?" is a ladder whose low rung ("less than 5") is a nothing-ever-happens bet.
+NOISE = re.compile(r'# of|number of|how many|' + NOISE_WORDS, re.I)  # the market's question
+TITLE_NOISE = re.compile(NOISE_WORDS, re.I)                           # the event's title
 
 
 # ---------------------------------------------------------------- plumbing
@@ -294,7 +299,7 @@ def sweep_tag(tag):
 
 def candidate_markets(e):
     """Markets in an event worth a look: live, two-sided, not noise, ends in 4 days to ~2.5 years."""
-    if 'sports' in e['tags'] or 'crypto' in e['tags']:
+    if 'sports' in e['tags'] or 'crypto' in e['tags'] or TITLE_NOISE.search(e['title']):
         return []
     out = []
     for m in e['markets']:
@@ -303,9 +308,54 @@ def candidate_markets(e):
         bid, ask = float(m['bid']), float(m['ask'])
         mid = (bid + ask) / 2
         days = (datetime.date.fromisoformat(m['end']) - TODAY).days
-        if ask - bid > 0.15 or not 0.05 <= mid <= 0.95 or not 4 <= days <= 900 or NOISE.search(m['q'] + ' ' + e['title']):
+        if ask - bid > 0.15 or not 0.05 <= mid <= 0.95 or not 4 <= days <= 900 or NOISE.search(m['q']):
             continue
         out.append(dict(m, mid=mid, days=days))
+    return out
+
+
+HISTORY_EVENTS = 4    # series history: the last this many resolved events ...
+HISTORY_MARKETS = 25  # ... with at most this many outcomes each (a date ladder takes a dozen)
+_MONTHS = 'january|february|march|april|may|june|july|august|september|october|november|december'
+
+
+def _same_q(q):
+    """A question with its numbers, months and punctuation taken out, to match it across the events of a series."""
+    return ' '.join(re.sub(rf'\d+|{_MONTHS}|[^\w ]', ' ', q.lower()).split())
+
+
+def series_history(e, cache):
+    """How the last few resolved events in this event's series went, for the reviewer.
+
+    A recurring event (a flight test, a monthly central-bank decision, a "before 2027" question renewed every year) is
+    best judged by how its predecessors resolved: the booster catch on Starship flights 11-14 resolved NO each time
+    while the market priced flight 15's at 75%. Each outcome is the past market's short title (or question) and
+    YES, NO or its final price; outcomes whose question matches one of this event's come first, then the YES ones.
+    """
+    full = get(f"{GAMMA}/events/{e['id']}", tries=3)
+    here = {_same_q(m['q']) for m in e['markets']}
+    out = []
+    for s in full.get('series') or []:
+        if s['id'] not in cache:
+            past = get(f"{GAMMA}/events?series_id={s['id']}&closed=true&order=id&ascending=false"
+                       f"&limit={HISTORY_EVENTS * 2}", tries=3)
+            past.sort(key=lambda v: v.get('closedTime') or v.get('endDate') or '', reverse=True)
+            cache[s['id']] = past[:HISTORY_EVENTS]
+        for v in cache[s['id']]:
+            last = {}  # label -> market; a market re-listed under the same label (Flight 12's were) keeps the last one
+            for m in sorted(v.get('markets') or [], key=lambda m: m.get('closedTime') or ''):
+                last[m.get('groupItemTitle') or m.get('question') or ''] = m
+            rows = []
+            for label, m in last.items():
+                try:
+                    yes = float(json.loads(m.get('outcomePrices') or '[]')[0])
+                except (ValueError, IndexError, TypeError):
+                    continue
+                res = 'YES' if yes >= 0.99 else 'NO' if yes <= 0.01 else f'{yes:.2f}'
+                rows.append((_same_q(m.get('question') or '') not in here, res != 'YES', f'{label}: {res}'))
+            if rows:
+                out.append(dict(event=v.get('title', ''), closed=(v.get('closedTime') or v.get('endDate') or '')[:10],
+                                outcomes=[r[2] for r in sorted(rows)[:HISTORY_MARKETS]]))
     return out
 
 
@@ -385,10 +435,12 @@ def write_batches(st, events, cands, order, seen):
                 r, p = reviews.get(m['id']), book.get(m['id'])
                 ms.append(dict(id=m['id'], question=m['q'], option=m['g'] or None, yes_bid=float(m['bid']),
                                yes_ask=float(m['ask']), end=m['end'], days=m['days'], liquidity=round(m['liq']), apr=m['hold'],
-                               last_review=dict(fair_yes=r['fair'], why=r['why'], day=r['day']) if r else None,
+                               last_review=dict(fair_yes=r['fair'], why=r['why'], day=r['day'],
+                                                **({'settles': r['settles']} if r.get('settles') else {})) if r else None,
                                book=dict(side=p['side'], fair=p.get('fair'), why=p.get('why')) if p else None))
             rows.append(dict(event=i, title=e['title'], url=f"https://polymarket.com/event/{e['slug']}",
-                             new=i not in seen, rules=e.get('rules', ''), markets=ms))
+                             new=i not in seen, rules=e.get('rules', ''), markets=ms,
+                             **({'history': e['history']} if e.get('history') else {})))
         name = f'b{g:03d}'
         write(os.path.join(BATCHES, name + '.json'), rows)
         out.append(dict(id=name, file=os.path.relpath(os.path.join(BATCHES, name + '.json'), ROOT),
@@ -435,6 +487,15 @@ def cmd_scan(a):
     # short-dated ones, where a small edge is a big yearly rate.
     cands = {i: ms for i, e in events.items() for ms in [candidate_markets(e)] if ms}
     order = sorted(cands, key=lambda i: (min(m['days'] for m in cands[i]), i))
+    recurring, series = [i for i in order if 'recurring' in events[i]['tags']], {}
+    def history(i):
+        try:
+            events[i]['history'] = series_history(events[i], series)
+        except Exception as ex:
+            print(f'history {i}: {ex}')
+    with ThreadPoolExecutor(4) as ex:
+        list(ex.map(history, recurring))
+    print(f"series history for {sum(1 for i in recurring if events[i].get('history'))} of {len(recurring)} recurring events")
     new = [i for i in order if i not in seen]
     os.makedirs(WORK, exist_ok=True)
     with open(CANDIDATES, 'w') as fh:
@@ -594,10 +655,21 @@ def cmd_note(a):
 
 # ---------------------------------------------------------------- full review
 
+def settle_date(s, end):
+    """A review's expected settlement date as YYYY-MM-DD, kept only if it falls from today up to the day before the end."""
+    try:
+        d = str(datetime.date.fromisoformat(str(s)[:10])) if s else None
+    except ValueError:
+        return None
+    return d if d and str(TODAY) <= d < end else None
+
+
 def cmd_ingest(a):
     """Read the research subagents' fair values (hunt/work/reviews/*.json) into the book and print what to act on.
 
-    Each result file is a JSON list of {"market": <market id>, "fair": <probability of YES>, "why": "<dated reason>"}.
+    Each result file is a JSON list of {"market": <market id>, "fair": <probability of YES>, "why": "<dated reason>"},
+    plus "settles": "YYYY-MM-DD" where the market will most likely be decided well before its end date (it hangs on a
+    scheduled launch, vote or ruling, and the end date is only a backstop); returns are then annualized to that date.
     Prints MISSING for batches with markets not reviewed today (rerun those), FLAG for markets outside the book where
     either side clears the main list's bars at today's prices, and BOOK DIFF where a review disagrees with a pick.
     """
@@ -629,6 +701,9 @@ def cmd_ingest(a):
                 continue
             reviews[mid] = dict(fair=round(min(max(fair, 0.001), 0.999), 4), why=why, day=str(TODAY),
                                 event=wanted[mid][1]['event'])
+            settles = settle_date(r.get('settles'), wanted[mid][2]['end'])
+            if settles:
+                reviews[mid]['settles'] = settles
             got += 1
     cutoff = str(TODAY - datetime.timedelta(days=REVIEW_KEEP_DAYS))
     for mid in [k for k, r in reviews.items() if r['day'] < cutoff]:
@@ -653,7 +728,7 @@ def cmd_ingest(a):
         for side, fair, ask in (('YES', r['fair'], m['yes_ask']), ('NO', 1 - r['fair'], 1 - m['yes_bid'])):
             if not 0 < ask < 1:
                 continue
-            x = econ(dict(ask=ask, fair=fair, end=m['end'], hold=m['apr']))
+            x = econ(dict(ask=ask, fair=fair, end=r.get('settles') or m['end'], hold=m['apr']))
             if x['ann'] >= MAIN_ANN and x['tot'] >= MIN_EDGE:
                 flags.append((x, side, ask, fair, e, m, r))
     flags.sort(key=lambda f: -f[0]['ann'])
@@ -670,8 +745,10 @@ def cmd_ingest(a):
     for line in bad[:20]:
         print(f'REJECTED {line}')
     for x, side, ask, fair, e, m, r in flags:
+        s = r.get('settles')
         print(f"FLAG {x['ann'] * 100:+,.0f}%/yr {x['tot'] * 100:+.0f}% {side} ask ~{ask:.3g} fair {fair:.3f} ends {m['end']}"
-              f"{' APR' if m['apr'] else ''} | add {e['event']} {m['id']} | {m['question']} | {r['why']}")
+              f"{f' settles ~{s}' if s else ''}{' APR' if m['apr'] else ''} | add {e['event']} {m['id']}"
+              f"{f' --end {s}' if s else ''} | {m['question']} | {r['why']}")
     for p, ours, r in diffs:
         print(f"BOOK DIFF {p['id']} {p['name']}: book {p['side']} fair {p['fair']:.3f}, review {ours:.3f} | {r['why']}")
 
