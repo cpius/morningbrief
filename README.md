@@ -67,18 +67,26 @@ that takes years. The main list is 30% a year and up, the appendix 10–30%.
 
 Every candidate market is researched every day, not only new events: about 2,200 markets in about 970 events
 (7 Nov 2026). A candidate is a live market with a spread of 15¢ or less, a YES price of 5–95¢ and 4–900 days to go,
-in an event under one of the swept tags that isn't sports, crypto or noise (`candidate_markets`, `NOISE`).
+in an event under one of the swept tags that isn't sports, crypto or noise (`candidate_markets`, `NOISE`). Count
+words ("how many", "number of") are noise in a market's question but not in its event's title, so a ladder like "How
+many Starship launches reach space in 2026?" stays in: its "less than 5" rung is a nothing-ever-happens bet.
 
 1. `scan` splits them into `hunt/work/batches/bNNN.json` (15 events or 30 markets each, nearest end first) and lists
    them in `hunt/work/batches/index.json`. Each market carries its rules, prices, its last review and, if it is in the
-   book, the book's side and fair value.
+   book, the book's side and fair value. Events tagged `recurring` also carry `history`: how the last 4 resolved events
+   in their Gamma series went (Starship flights 11–14, past RBNZ decisions, last year's "before 2026" question), as the
+   reviewer's base rate.
 2. The routine gives each batch to a research subagent (Sonnet, several at a time). It reads the rules, searches the
    news (since the last review, if there is one) and writes `hunt/work/reviews/bNNN.json`:
-   `[{"market": "<id>", "fair": <probability of YES>, "why": "<dated reason>"}, ...]`.
+   `[{"market": "<id>", "fair": <probability of YES>, "why": "<dated reason>", "settles": "<YYYY-MM-DD>"}, ...]`.
+   `settles` is optional: the day the market will most likely be decided when that is well before its end date (a
+   Starship flight's booster market ends 1 Jul 2027 but is decided at launch).
 3. `ingest` reads them into the book's `reviews` (kept 30 days, so the next day's review can look only at what's new)
    and prints `MISSING` batches to rerun, `FLAG` lines for markets outside the book where either side clears the main
    list's bars at today's prices (30% a year and +3% to resolution, and at least 5¢ off the mid), and `BOOK DIFF` where a review disagrees with a
-   pick's fair value by 5¢ or more. The routine checks each FLAG itself before it `add`s it (`add <event> <market id>`).
+   pick's fair value by 5¢ or more. A FLAG with a `settles` date is annualized to that date and its `add` command
+   carries `--end <date>`, so the pick is ranked the same way. The routine checks each FLAG itself before it `add`s it
+   (`add <event> <market id>`).
 
 The page's stamp shows how many candidate markets were researched that day.
 
