@@ -46,6 +46,8 @@ the weekly plan was left at each point and what each stage used.
   seconds of each other are shared.
 - The effort level is read from the session's `CLAUDE_EFFORT` variable when it is set, else from `--effort`; the model
   comes from `--model`, so keep those flags in the routine prompt in step with the routine's settings.
+- While a run is going, the routine also redeploys after each group of 10 review subagents, and the page re-reads the
+  log every minute, so /log/ follows the run with a lag of minutes rather than hours.
 - Logging never stops a run: each command catches its own errors and `run` always runs (and exits with) the command.
   Working files go to `.runlog/` (ignored).
 
