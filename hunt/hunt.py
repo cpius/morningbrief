@@ -1175,6 +1175,28 @@ section, tr, header, .box {{ scroll-margin-top: 64px; }}
 td.flash {{ animation: flash 2.5s ease-out; }}
 @media (prefers-reduced-motion: reduce) {{ td.flash, .refresh.busy span[aria-hidden] {{ animation: none; }} }}
 .live {{ color: var(--muted); font-size: 13px; }}
+dialog.moves {{ width: min(680px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; color: var(--ink); background: var(--surface);
+                border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 24px 64px rgb(0 0 0 / .3); }}
+dialog.moves[open] {{ display: flex; flex-direction: column; }}
+dialog.moves::backdrop {{ background: rgb(8 12 20 / .5); }}
+.moves-head {{ display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 18px 20px 12px; border-bottom: 1px solid var(--rule); }}
+.moves-head h2 {{ margin: 0; }}
+.moves-head p {{ margin: 2px 0 0; font-size: 13px; color: var(--muted); }}
+.moves-close {{ flex: none; width: 32px; height: 32px; font-size: 20px; line-height: 1; color: var(--muted); background: none; cursor: pointer;
+                border: 1px solid var(--rule); border-radius: 999px; }}
+.moves-close:hover {{ color: var(--ink); }}
+.moves-close:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+.moves-list {{ list-style: none; margin: 0; padding: 0 20px; overflow-y: auto; }}
+.moves-list li {{ display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 4px 16px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--rule); }}
+.moves-list li:last-child {{ border-bottom: 0; }}
+.moves-list a {{ font-weight: 600; line-height: 1.35; }}
+.moves-list .sub {{ grid-column: 1; }}
+.moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
+.moves-list .chg {{ color: var(--muted); }}
+.moves-list .d {{ font-weight: 600; }}
+.moves-empty {{ margin: 0; padding: 20px; color: var(--muted); }}
+.moves-foot {{ margin: 0; padding: 10px 20px 14px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); }}
+.moves-foot:empty {{ display: none; }}
 .tabs::-webkit-scrollbar {{ display: none; }}
 .tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px;
            font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
@@ -1305,6 +1327,12 @@ footer p {{ margin: 0; }}
     Rebuilt every morning by the morning brief routine.</p>
   </footer>
 </div>
+<dialog class="moves" id="moves" aria-labelledby="moves-title">
+  <div class="moves-head"><div><h2 id="moves-title">Biggest moves</h2><p id="moves-since"></p></div>
+    <button type="button" class="moves-close" id="moves-close" aria-label="Close">×</button></div>
+  <ol class="moves-list" id="moves-list"></ol>
+  <p class="moves-foot" id="moves-foot"></p>
+</dialog>
 <script>
 // Light up the tab of the section being read. A clicked tab stays lit until the reader scrolls themselves,
 // since a short last section can never scroll up to the bar.
@@ -1415,6 +1443,50 @@ REFRESH_JS = r"""
     const e = econ(b.ask, +li.dataset.fair, li.dataset.end, li.dataset.hold === '1');
     out.textContent = ` · ask now ${px(b.ask)}, ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
   };
+  // The modal after a refresh: the prices that moved most since the reader last saw them (the build, then each refresh).
+  const dlg = document.getElementById('moves'), seen = new Map(), TOP = 10;
+  let sinceText = `the page was built at ${btn.dataset.built}`;
+  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const num = s => s === '' || s == null || isNaN(+s) ? null : +s;
+  const quote = el => {  // which price a row tracks, and what it showed before this refresh
+    const kind = el.dataset.size ? 'bid' : 'ask';
+    const prev = seen.has(el) ? seen.get(el) : el.tagName === 'LI' ? null : num(kind === 'bid' ? el.dataset.bid : el.dataset.ask);
+    return { kind, prev };
+  };
+  const showMoves = (moves, total) => {
+    if (!dlg || !dlg.showModal) return;
+    const list = dlg.querySelector('#moves-list');
+    // a quote that appeared or vanished outranks any move in cents; then the bigger move first
+    moves.sort((a, b) => (b.d == null) - (a.d == null) || Math.abs(b.d || 0) - Math.abs(a.d || 0));
+    const seenTok = new Set(), uniq = moves.filter(m => !seenTok.has(m.token) && seenTok.add(m.token));
+    dlg.querySelector('#moves-since').textContent = `Since ${sinceText}`;
+    list.innerHTML = uniq.slice(0, TOP).map((m, i) => {
+      const tone = m.good ? 'up' : 'down';
+      const d = m.d == null ? (m.now == null ? 'gone' : 'new')
+        : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
+      const sub = [m.side, m.kind === 'bid' ? 'your position, best bid' : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '']
+        .filter(Boolean).join(' · ');
+      return `<li><a href="#" data-i="${i}">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
+             `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div></li>`;
+    }).join('');
+    list.hidden = !uniq.length;
+    let empty = dlg.querySelector('.moves-empty');
+    if (!uniq.length && !empty) { empty = document.createElement('p'); empty.className = 'moves-empty'; list.after(empty); }
+    if (empty) { empty.hidden = !!uniq.length; empty.textContent = 'No price has moved.'; }
+    dlg.querySelector('#moves-foot').textContent = uniq.length
+      ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position.`
+      : '';
+    list.querySelectorAll('a').forEach(a => a.addEventListener('click', ev => {  // jump to the row behind a move
+      ev.preventDefault(); dlg.close();
+      uniq[+a.dataset.i].el.scrollIntoView({ block: 'center' });
+    }));
+    if (!dlg.open) dlg.showModal();
+    list.scrollTop = 0;
+  };
+  if (dlg) {
+    dlg.querySelector('#moves-close').addEventListener('click', () => dlg.close());
+    dlg.addEventListener('click', ev => { if (ev.target === dlg) dlg.close(); });  // a click on the backdrop
+  }
   const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('asks-at');
   btn.addEventListener('click', async () => {
     const rows = [...document.querySelectorAll('[data-token]')];
@@ -1430,12 +1502,24 @@ REFRESH_JS = r"""
         return r.json();
       }))).flat();
       const by = new Map(books.map(b => [b.asset_id, top(b)]));
+      const moves = [];
       for (const el of rows) {
         const b = by.get(el.dataset.token);
         if (!b) continue;
+        const { kind, prev } = quote(el), now = b[kind] || null;
         if (el.tagName === 'LI') noSeller(el, b); else if (el.dataset.size) held(el, b); else pick(el, b);
+        seen.set(el, now);
+        if (prev == null && now == null) continue;
+        const d = prev == null || now == null ? null : now - prev;
+        if (d != null && Math.abs(d) < 5e-4) continue;
+        const up = d == null ? now != null : d > 0;  // the quote rose, or one appeared
+        const a = el.querySelector('a'), side = el.querySelector('.side'), yr = el.tagName === 'TR' && cell(el, 'Per yr');
+        moves.push({ el, token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
+                     name: a ? a.textContent : '', side: side ? side.textContent : '', ann: yr ? yr.textContent.trim() : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      showMoves(moves, by.size);
+      sinceText = `the last refresh at ${t}`;
       when.textContent = t.slice(0, 5);
       stamp.textContent = `Live asks at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books)`;
       lbl.textContent = 'Refresh asks';
