@@ -36,8 +36,12 @@ the weekly plan was left at each point and what each stage used.
 - Data: `site/log/index.json` (one summary per run, last 180) and `site/log/runs/<id>.json` (full log, last 30); the
   page `site/log/index.html` is copied from `runlog.html` and renders them in the browser. Like the hunt's book, the
   history lives in the deployment: `start` pulls the live log back before the run adds to it.
-- Plan usage comes from the Claude OAuth usage endpoint, using the environment's Claude sign-in
-  (`CLAUDE_CODE_OAUTH_TOKEN` or `~/.claude/.credentials.json`). Where there is none, each reading records why and the
+- Plan usage: cloud sessions sign Claude Code in through the platform and have no token a script can use, so the
+  `morningbrief` environment keeps one as the secret variable `RUNLOG_OAUTH_TOKEN`, a long-lived token from
+  `claude setup-token` (valid for a year; renew it before it runs out). That kind of token may only run the model, so
+  each reading makes one tiny Haiku request through Claude Code with it and takes the weekly (and, when reported,
+  5-hour) utilization from Claude Code's rate-limit report. Locally, a full sign-in (`CLAUDE_CODE_OAUTH_TOKEN` or
+  `~/.claude/.credentials.json`) reads the usage endpoint instead. Without either, each reading records why and the
   page says usage was unavailable. `RUNLOG_USAGE_FILE=<json>` feeds fixed readings for testing. Readings within 30
   seconds of each other are shared.
 - The effort level is read from the session's `CLAUDE_EFFORT` variable when it is set, else from `--effort`; the model
