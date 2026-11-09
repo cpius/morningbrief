@@ -932,6 +932,12 @@ def smart_cell(p):
     return f'<b class="{t}" title="{tip}">{v:.0f}%</b><div class="sub">${s["ours"]:,} v ${s["theirs"]:,}</div>'
 
 
+def live_attrs(p):
+    """What the page's Refresh asks button needs to redo a row's math at a live price."""
+    fair = '' if p.get('fair') is None else p['fair']
+    return f'data-token="{esc(p["token"])}" data-fair="{fair}" data-end="{esc(p["end"])}" data-hold="{1 if p.get("hold") else 0}"'
+
+
 def row_html(i, p, e):
     side = side_pill(p)
     badges = ''
@@ -957,7 +963,7 @@ def row_html(i, p, e):
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
     smart = smart_cell(p)
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr id="m{esc(p['id'])}">
+    return f'''<tr id="m{esc(p['id'])}" {live_attrs(p)} data-ask="{p['ask']}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side}{badges}</div><p class="why">{esc(p['why'])}</p></td>
   <td class="num" data-k="Ask"><b>{px(p['ask'])}</b>{move}</td>
@@ -1008,7 +1014,7 @@ def held_row_html(i, p, h):
         hvs = per_yr = edge = '<span class="faint">–</span>'
     why = f'<p class="why">{esc(p["why"])}</p>' if p.get('why') else ''
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr>
+    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-bid="{p.get('bid') or ''}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
   <td class="num" data-k="Held"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
@@ -1060,8 +1066,12 @@ def render(st, main, extra, noask, held):
         tabs.append(('No sellers', 'noask', len(noask)))
     if st['dropped']:
         tabs.append(('Dropped', 'dropped', len(st['dropped'])))
-    tabs_html = ('<nav class="tabs" aria-label="Sections">' + ''.join(
-        f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>')
+    tabs_html = ('<div class="bar"><nav class="tabs" aria-label="Sections">' + ''.join(
+        f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>'
+        f'<button type="button" class="refresh" id="refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
+        f'data-main="{MAIN_ANN}" data-built="{NOW:%H:%M}" title="Fetch the current order books from Polymarket and redo '
+        f'the returns at those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
+        f'<span class="lbl">Refresh asks</span><span class="when"></span></button></div>')
     dropped = ''
     if st['dropped']:
         dropped = ('<section id="dropped"><h2>Dropped today</h2><ul class="plain">' + ''.join(
@@ -1072,8 +1082,8 @@ def render(st, main, extra, noask, held):
     if noask:
         noask_html = ('<section id="noask"><h2>No sellers today</h2><p class="note">Still in the book, but nobody is offering our side, '
                       'so there is no return to show.</p><ul class="plain">' + ''.join(
-                          f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
-                          f'{p["fair"]:.2f}</span></li>' for p in noask) + '</ul></section>')
+                          f'<li {live_attrs(p)}><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
+                          f'{p["fair"]:.2f}</span><span class="live"></span></li>' for p in noask) + '</ul></section>')
     above = sum(1 for _, h in held if h and h['tot'] < 0)
     unvalued = sum(1 for p, _ in held if p.get('fair') is None)
     held_html = ''
@@ -1147,10 +1157,26 @@ h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw,
 .stat .s {{ font-size: 12.5px; color: var(--muted); }}
 section, tr, header, .box {{ scroll-margin-top: 64px; }}
 @media (prefers-reduced-motion: no-preference) {{ html {{ scroll-behavior: smooth; }} }}
-.tabs {{ position: sticky; top: 0; z-index: 10; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none;
-         margin: 0 -28px; padding: 0 16px; background: var(--ground); border-bottom: 1px solid var(--rule); }}
+.bar {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: stretch; gap: 10px; margin: 0 -28px; padding: 0 16px; min-width: 0;
+        background: var(--ground); box-shadow: inset 0 -1px var(--rule); }}
+.tabs {{ flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }}
+.refresh {{ flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+            font: 600 13px var(--body); color: var(--accent); background: var(--surface); cursor: pointer;
+            border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; }}
+.refresh:hover {{ background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }}
+.refresh:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+.refresh:disabled {{ cursor: progress; opacity: .7; }}
+.refresh .when {{ font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--muted); }}
+.refresh .when:empty {{ display: none; }}
+.refresh.busy span[aria-hidden] {{ animation: spin 1s linear infinite; }}
+.refresh.err {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }}
+@keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+@keyframes flash {{ from {{ background: color-mix(in srgb, var(--accent) 22%, transparent); }} to {{ background: transparent; }} }}
+td.flash {{ animation: flash 2.5s ease-out; }}
+@media (prefers-reduced-motion: reduce) {{ td.flash, .refresh.busy span[aria-hidden] {{ animation: none; }} }}
+.live {{ color: var(--muted); font-size: 13px; }}
 .tabs::-webkit-scrollbar {{ display: none; }}
-.tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px; margin-bottom: -1px;
+.tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px;
            font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
 .tabs a:hover {{ color: var(--ink); }}
 .tabs a[aria-current] {{ color: var(--ink); border-bottom-color: var(--accent); }}
@@ -1203,7 +1229,9 @@ footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: gri
 footer p {{ margin: 0; }}
 @media (max-width: 720px) {{
   .wrap {{ padding: 24px 16px 48px; }}
-  .tabs {{ margin: 0 -16px; padding: 0 4px; }}
+  .bar {{ margin: 0 -16px; padding: 0 4px; gap: 4px; }}
+  .refresh {{ padding: 5px 10px; margin-right: 8px; }}
+  .refresh .lbl {{ display: none; }}
   .stamp {{ text-align: left; }}
   .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
   .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
@@ -1217,7 +1245,7 @@ footer p {{ margin: 0; }}
   table.hunt tr:last-child {{ border-bottom: 0; }}
   table.hunt td {{ padding: 0; border: 0; }}
   td.n {{ display: none; }}
-  td.mkt {{ grid-column: 1 / -1; min-width: 0; }}
+  td.mkt {{ grid-column: 1 / -1; min-width: 0; width: auto; }}
   td.num {{ text-align: left; white-space: normal; }}
   td.num::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
 }}
@@ -1227,7 +1255,7 @@ footer p {{ margin: 0; }}
            --gold: #8F6200; --gold-bg: #FFF4D1; --gold-line: #E9C46A; --up: #177A47; --down: #BD3434; --accent: #2F4BCF; }}
   body {{ font-size: 9pt; }}
   .wrap {{ max-width: none; padding: 0; gap: 12px; }}
-  .eyebrow a, .tabs {{ display: none; }}
+  .eyebrow a, .bar {{ display: none; }}
   td {{ padding: 5px 6px; }} th {{ padding: 6px; }}
   td.mkt {{ min-width: 0; width: 42%; }}
   tr {{ break-inside: avoid; }}
@@ -1244,7 +1272,7 @@ footer p {{ margin: 0; }}
       geopolitics, ranked by annualized return: a small edge that pays out in weeks beats a big one that takes years.
       Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
     </div>
-    <div class="stamp">Asks at {NOW:%-d %b %Y, %H:%M}<br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
+    <div class="stamp"><span id="asks-at">Asks at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
   </header>
   <section class="summary" aria-label="Summary">
     <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{len(main)}</a></span><span class="s"><a href="#main">main list</a></span></div>
@@ -1261,7 +1289,9 @@ footer p {{ margin: 0; }}
   {noask_html}
   {dropped}
   <footer>
-    <p><b>Ask</b> is the best offer for our side now; "was" shows the last run's ask (green = cheaper today). <b>Fair</b> is my
+    <p><b>Ask</b> is the best offer for our side now; "was" shows the last run's ask (green = cheaper today).
+    <b>Refresh asks</b> refetches every order book from Polymarket and redoes Ask, Bid, Return, Per yr and Depth at those
+    prices; "was" then shows the ask when the page was built. It does no research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
     a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
     ranked by it. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
@@ -1306,9 +1336,118 @@ footer p {{ margin: 0; }}
   if (hashed >= 0) pinned = hashed;
   update();
 }})();
+{REFRESH_JS}
 </script>
 </body></html>
 '''
+
+
+# The Refresh asks button: live order books from Polymarket's CLOB (it allows any origin), the same math as econ() and
+# hold_econ(), written into the rows in place. Nothing is researched and nothing is saved.
+REFRESH_JS = r"""
+(() => {
+  const btn = document.getElementById('refresh');
+  if (!btn) return;
+  const APR = +btn.dataset.apr, MIN_DAYS = +btn.dataset.minDays, MAIN = +btn.dataset.main;
+  const px = x => x == null ? '–' : String(+x.toPrecision(3));
+  const fv = x => x >= 0.95 || x <= 0.05 ? x.toFixed(3) : x.toFixed(2);
+  const pct = x => (x < 0 ? '-' : '+') + Math.abs(Math.round(x * 100)).toLocaleString('en-US') + '%';
+  const usd = x => '$' + Math.round(Math.abs(x)).toLocaleString('en-US');
+  const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Copenhagen' }).format(new Date());
+  const span = end => { const d = Math.max(Math.round((Date.parse(end) - Date.parse(today())) / 864e5), 1); return [d, d / 365]; };
+  const perYear = (tot, days) => tot * 365 / Math.max(days, MIN_DAYS);
+  const econ = (ask, fair, end, hold) => {
+    const [days, yrs] = span(end), ret = fair / ask - 1;
+    const bonus = hold ? APR * yrs * ((ask + fair) / 2) / ask : 0, tot = ret + bonus;
+    return { bonus, tot, ann: perYear(tot, days) };
+  };
+  const holdEcon = (bid, fair, end, hold, size) => {
+    const [days, yrs] = span(end), reward = hold ? APR * yrs * (bid + fair) / 2 : 0, tot = (fair + reward) / bid - 1;
+    return { tot, bonus: reward / bid, ann: perYear(tot, days), edge: size * (fair + reward - bid), value: size * bid };
+  };
+  const cell = (tr, k) => tr.querySelector(`td[data-k="${k}"]`);
+  const put = (td, html) => {  // flash the cell only when its number changed, not just its "was" line
+    if (!td) return;
+    const lead = () => (td.firstElementChild || td).textContent, old = lead();
+    td.innerHTML = html;
+    if (lead() !== old) { td.classList.remove('flash'); void td.offsetWidth; td.classList.add('flash'); }
+  };
+  const top = book => {
+    const asks = (book.asks || []).map(o => [+o.price, +o.size]).sort((a, b) => a[0] - b[0]);
+    const bids = (book.bids || []).map(o => +o.price).sort((a, b) => b - a);
+    const ask = asks.length ? asks[0][0] : null;
+    const depth = ask == null ? 0 : Math.round(asks.filter(([p]) => p <= ask + 0.02 + 1e-9).reduce((s, [p, z]) => s + p * z, 0));
+    return { ask, bid: bids.length ? bids[0] : null, depth };
+  };
+  const was = (now, then, better) => {
+    if (now == null || isNaN(then)) return '';
+    if (Math.abs(now - then) < 1e-9) return '<div class="sub">unchanged</div>';
+    return `<div class="sub ${better(now, then) ? 'up' : 'down'}">was ${px(then)}</div>`;
+  };
+  const pick = (tr, b) => {  // a main-list or slower row
+    const fair = +tr.dataset.fair, hold = tr.dataset.hold === '1';
+    put(cell(tr, 'Ask'), `<b>${px(b.ask)}</b>` + (b.ask == null ? '<div class="sub down">no sellers now</div>'
+      : was(b.ask, +tr.dataset.ask, (n, t) => n < t)));
+    put(cell(tr, 'Depth'), '$' + b.depth.toLocaleString('en-US'));
+    const ret = cell(tr, 'Per yr');
+    if (b.ask == null) {
+      put(cell(tr, 'Return'), '<span class="faint">–</span>'); put(ret, '<b>–</b>'); ret.className = 'num ret r0'; return;
+    }
+    const e = econ(b.ask, fair, tr.dataset.end, hold);
+    put(cell(tr, 'Return'), `<b>${pct(e.tot)}</b>` + (hold ? `<div class="sub gold">incl. +${(e.bonus * 100).toFixed(1)}% reward</div>` : ''));
+    put(ret, `<b>${pct(e.ann)}</b>`);
+    ret.className = 'num ret ' + (e.ann >= 1 ? 'r3' : e.ann >= 0.5 ? 'r2' : e.ann >= MAIN ? 'r1' : 'r0');
+  };
+  const held = (tr, b) => {  // an open position: what selling into the bid gives up
+    put(cell(tr, 'Bid'), `<b>${px(b.bid)}</b>` + was(b.bid, parseFloat(tr.dataset.bid), (n, t) => n > t));
+    const dash = '<span class="faint">–</span>';
+    if (tr.dataset.fair === '' || !b.bid) { ['Hold vs sell', 'Per yr', '$ edge'].forEach(k => put(cell(tr, k), dash)); return; }
+    const h = holdEcon(b.bid, +tr.dataset.fair, tr.dataset.end, tr.dataset.hold === '1', +tr.dataset.size);
+    const tone = h.tot < 0 ? 'down' : h.tot < 0.02 ? 'flat' : 'up';
+    put(cell(tr, 'Hold vs sell'), `<b class="${tone}">${h.tot < 0 ? '-' : '+'}${Math.abs(h.tot * 100).toFixed(1)}%</b>` +
+      (tr.dataset.hold === '1' ? `<div class="sub gold">incl. +${(h.bonus * 100).toFixed(1)}% reward</div>` : ''));
+    put(cell(tr, 'Per yr'), `<b class="${tone}">${pct(h.ann)}</b>`);
+    put(cell(tr, '$ edge'), `<b class="${tone}">${h.edge >= 0 ? '+' : '−'}${usd(h.edge)}</b><div class="sub">on ${usd(h.value)}</div>`);
+  };
+  const noSeller = (li, b) => {
+    const out = li.querySelector('.live');
+    if (b.ask == null) { out.textContent = ' · still no sellers'; return; }
+    const e = econ(b.ask, +li.dataset.fair, li.dataset.end, li.dataset.hold === '1');
+    out.textContent = ` · ask now ${px(b.ask)}, ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
+  };
+  const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('asks-at');
+  btn.addEventListener('click', async () => {
+    const rows = [...document.querySelectorAll('[data-token]')];
+    const tokens = [...new Set(rows.map(r => r.dataset.token))];
+    btn.disabled = true; btn.classList.add('busy'); btn.classList.remove('err'); lbl.textContent = 'Refreshing…';
+    try {
+      const chunks = [];
+      for (let i = 0; i < tokens.length; i += 100) chunks.push(tokens.slice(i, i + 100));
+      const books = (await Promise.all(chunks.map(async c => {
+        const r = await fetch('https://clob.polymarket.com/books', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify(c.map(t => ({ token_id: t }))) });
+        if (!r.ok) throw new Error(`Polymarket answered ${r.status}`);
+        return r.json();
+      }))).flat();
+      const by = new Map(books.map(b => [b.asset_id, top(b)]));
+      for (const el of rows) {
+        const b = by.get(el.dataset.token);
+        if (!b) continue;
+        if (el.tagName === 'LI') noSeller(el, b); else if (el.dataset.size) held(el, b); else pick(el, b);
+      }
+      const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      when.textContent = t.slice(0, 5);
+      stamp.textContent = `Live asks at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books)`;
+      lbl.textContent = 'Refresh asks';
+    } catch (err) {
+      btn.classList.add('err'); lbl.textContent = 'Retry'; when.textContent = '';
+      stamp.textContent = `Couldn't refresh the asks: ${err.message}`;
+    } finally {
+      btn.disabled = false; btn.classList.remove('busy');
+    }
+  });
+})();
+"""
 
 
 # ---------------------------------------------------------------- cli
