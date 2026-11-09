@@ -17,6 +17,34 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   updates the hunt's book, reruns the script and deploys. It then runs the hunt's full review (below), which takes
   a few hours, and builds and deploys again, so a slow or failed review never holds up the brief.
 
+## Run log (`runlog.py`, `/log/`)
+
+Each routine run is logged and published at https://morningbrief.dorup.dk/log/ (linked from the brief's stamp).
+For every stage it records who ran it (a script, the main agent or research subagents), the model and effort level,
+start time, time spent, exit code, counts and notes, plus the start and end of a script's output. For every subagent
+it records model, effort, time, tokens, tool uses, web searches and the markets it wrote. The account's weekly and
+5-hour Claude plan usage is read at the start, at every stage boundary and at the end, so the page shows how much of
+the weekly plan was left at each point and what each stage used.
+
+    python3 runlog.py start --model claude-opus-5-5 --effort xhigh
+    python3 runlog.py run refresh "Refresh brief" -- python3 refresh.py    # times a script; output passes through
+    python3 runlog.py begin research "Why it moved research"             # a stage the agent does itself ...
+    python3 runlog.py end research --metric missing=15 --note "..."       # ... and its end
+    python3 runlog.py jobs review --model claude-sonnet-5-5 --effort medium < lines   # one line per subagent
+    python3 runlog.py note|metric|finish|usage ...
+
+- Data: `site/log/index.json` (one summary per run, last 180) and `site/log/runs/<id>.json` (full log, last 30); the
+  page `site/log/index.html` is copied from `runlog.html` and renders them in the browser. Like the hunt's book, the
+  history lives in the deployment: `start` pulls the live log back before the run adds to it.
+- Plan usage comes from the Claude OAuth usage endpoint, using the environment's Claude sign-in
+  (`CLAUDE_CODE_OAUTH_TOKEN` or `~/.claude/.credentials.json`). Where there is none, each reading records why and the
+  page says usage was unavailable. `RUNLOG_USAGE_FILE=<json>` feeds fixed readings for testing. Readings within 30
+  seconds of each other are shared.
+- The effort level is read from the session's `CLAUDE_EFFORT` variable when it is set, else from `--effort`; the model
+  comes from `--model`, so keep those flags in the routine prompt in step with the routine's settings.
+- Logging never stops a run: each command catches its own errors and `run` always runs (and exits with) the command.
+  Working files go to `.runlog/` (ignored).
+
 ## Mispricing hunt (`hunt/`)
 
 A book of Polymarket picks, mostly "nothing ever happens" NO bets on politics and geopolitics, each with a fair
