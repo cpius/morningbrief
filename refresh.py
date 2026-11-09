@@ -747,7 +747,7 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
       <h1>Nothing Ever Happens Book</h1>
       <!--BRIEF-->
     </div>
-    <div class="stamp">Snapshot {fmt_date(SNAP)}, {SNAP:%H:%M}<br>24h window from {WIN.day} {WIN:%b}, {WIN:%H:%M}<br>0x9d4A…5887</div>
+    <div class="stamp">Snapshot {fmt_date(SNAP)}, {SNAP:%H:%M}<br>24h window from {WIN.day} {WIN:%b}, {WIN:%H:%M}<br>0x9d4A…5887<!--LOG--></div>
   </header>
 
   <section class="summary" aria-label="Portfolio summary">
@@ -816,6 +816,9 @@ BRIEF = f"""<div class="brief">
       }})();
       </script>"""
 
+# Link to the routine's run log (site/log/, written by runlog.py); Vercel site only.
+LOG_LINK = '<br><a href="log/" style="color: var(--accent)">Run log →</a>'
+
 # Standalone copy for the Vercel site; the artifact adds this document skeleton itself.
 os.makedirs(os.path.join(HERE, 'site'), exist_ok=True)
 with open(os.path.join(HERE, 'site', 'index.html'), 'w') as fh:
@@ -824,7 +827,7 @@ with open(os.path.join(HERE, 'site', 'index.html'), 'w') as fh:
              '<meta name="robots" content="noindex">\n'
              f'<link rel="icon" type="image/svg+xml" href="{FAVICON}">\n'
              '<style>body { margin: 0; }</style>\n'
-             f"{page.replace('<!--BRIEF-->', BRIEF)}\n</html>\n")
+             f"{page.replace('<!--BRIEF-->', BRIEF).replace('<!--LOG-->', LOG_LINK)}\n</html>\n")
 
 print(f"wrote {OUT}")
 print(f"snapshot {SNAP:%Y-%m-%d %H:%M}  value {usd(tot_value)}  pnl {usd(tot_pnl, True)}  24h {usd(d24_all, True)} "

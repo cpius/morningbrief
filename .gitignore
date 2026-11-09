@@ -6,3 +6,4 @@ site/
 .env*
 __pycache__/
 hunt/work/
+.runlog/
