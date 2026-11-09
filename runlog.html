@@ -291,7 +291,7 @@ dl.kv dd a { color: var(--accent); }
   }
 
   function stageTable(r) {
-    const rows = r.stages.map(s => {
+    const rows = r.stages.map((s, i) => {
       const d = stageDelta(r, s);
       const extra = [
         s.command ? `<div>Command: <code>${esc(s.command)}</code>${s.exit != null ? ` · exit ${esc(s.exit)}` : ''}</div>` : '',
@@ -299,7 +299,7 @@ dl.kv dd a { color: var(--accent); }
         (s.notes || []).map(n => `<div>${esc(n)}</div>`).join(''),
         s.output?.length ? `<pre>${esc(s.output.join('\n'))}</pre>` : '',
       ].join('');
-      const name = extra ? `<details class="more"><summary>${esc(s.title)}</summary><div class="more-body">${extra}</div></details>` : esc(s.title);
+      const name = extra ? `<details class="more" data-k="${i}"><summary>${esc(s.title)}</summary><div class="more-body">${extra}</div></details>` : esc(s.title);
       return `<tr><td>${name}</td><td><span class="by"><i class="sw ${esc(s.by)}"></i>${esc(BY[s.by] || s.by)}</span></td>
         <td class="me">${s.by === 'script' ? '<span class="muted">no model</span>' : me(s.model, s.effort)}</td>
         <td class="num">${esc(s.started ? fSec.format(T(s.started)) : '—')}</td><td class="num">${esc(dur(s.seconds))}</td>
@@ -380,19 +380,37 @@ dl.kv dd a { color: var(--accent); }
     const g = runEl.querySelector('.gantt'); if (g) wireGantt(g, r);
   }
 
+  // While the run on screen is still going, re-read the log every minute; the routine republishes it as it goes.
+  let timer = null, shownId = null;
+  const stamp = () => {
+    const live = INDEX.runs[0]?.status === 'running';
+    document.getElementById('stamp').innerHTML = INDEX.updated ? `Updated ${esc(day(INDEX.updated))}, ${esc(hm(INDEX.updated))}<br>${INDEX.runs.length} runs logged${live ? '<br>A run is going: this page refreshes every minute' : ''}` : '';
+  };
+
   async function show() {
+    clearTimeout(timer);
     const id = decodeURIComponent(location.hash.slice(1)) || INDEX.runs.find(r => r.detail)?.id;
     renderRuns(INDEX, id);
     if (!id) { runEl.innerHTML = ''; return; }
     try {
       const r = await (await fetch(`runs/${encodeURIComponent(id)}.json?v=${encodeURIComponent(INDEX.updated || '')}`)).json();
+      const open = id === shownId ? [...runEl.querySelectorAll('details[open][data-k]')].map(d => d.dataset.k) : [];
       renderRun(r);
+      shownId = id;
+      open.forEach(k => runEl.querySelector(`details[data-k="${k}"]`)?.setAttribute('open', ''));
+      if (r.status === 'running') timer = setTimeout(refresh, 60000);
     } catch (e) { runEl.innerHTML = `<p class="empty">The full log of this run is not kept any more.</p>`; }
+  }
+
+  async function refresh() {
+    try { INDEX = await (await fetch(`index.json?t=${Date.now()}`)).json(); stamp(); } catch (e) { /* keep what is on screen */ }
+    hideTip();
+    show();
   }
 
   fetch(`index.json?t=${Date.now()}`).then(r => r.json()).then(idx => {
     INDEX = idx;
-    document.getElementById('stamp').innerHTML = idx.updated ? `Updated ${esc(day(idx.updated))}, ${esc(hm(idx.updated))}<br>${idx.runs.length} runs logged` : '';
+    stamp();
     addEventListener('hashchange', show);
     show();
   }).catch(() => { runsEl.innerHTML = '<p class="empty">No run log has been published yet.</p>'; });
