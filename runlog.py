@@ -22,10 +22,12 @@ e.g. `b001 subagent_tokens: 50951 tool_uses: 3 duration_ms: 12226 | 22 of 22 mar
 The log lives in site/log/ (index.json, runs/<id>.json, index.html) and ships with deploy.py. Like the hunt's
 book, history is carried in the deployment: `start` pulls the live index and the last 30 runs back first.
 Logging never stops a run: every command catches its own errors, and `run` always runs the command.
-Plan usage comes from the Claude OAuth usage endpoint when the environment has a Claude OAuth token; otherwise
+Plan usage comes from Claude Code's own rate-limit report when RUNLOG_OAUTH_TOKEN holds a `claude setup-token` token
+(the cloud routine), else from the Claude OAuth usage endpoint with a full sign-in (CLAUDE_CODE_OAUTH_TOKEN or
+~/.claude/.credentials.json, i.e. locally); otherwise
 each checkpoint records why it is unavailable (set RUNLOG_USAGE_FILE to a JSON file to test with fixed data).
 """
-import argparse, datetime, json, os, re, subprocess, sys, time, urllib.error, urllib.request
+import argparse, datetime, json, os, re, shutil, subprocess, sys, time, urllib.error, urllib.request
 from collections import deque
 
 os.environ['TZ'] = 'Europe/Copenhagen'  # ids and the page read in Copenhagen time, like the brief
@@ -149,9 +151,9 @@ def normalize(raw):
 
 
 def oauth_token():
-    """The Claude OAuth token this environment signs in with, and where it came from (never logged)."""
-    if os.environ.get('CLAUDE_CODE_OAUTH_TOKEN'):
-        return os.environ['CLAUDE_CODE_OAUTH_TOKEN'], 'env CLAUDE_CODE_OAUTH_TOKEN'
+    """A full-scope Claude OAuth token for the usage endpoint, and where it came from (the token is never logged)."""
+    if os.environ.get('CLAUDE_CODE_OAUTH_TOKEN', '').strip():
+        return os.environ['CLAUDE_CODE_OAUTH_TOKEN'].strip(), 'env CLAUDE_CODE_OAUTH_TOKEN'
     for d in filter(None, [os.environ.get('CLAUDE_CONFIG_DIR'), os.path.expanduser('~/.claude')]):
         p = os.path.join(d, '.credentials.json')
         t = ((read_json(p, {}) or {}).get('claudeAiOauth') or {}).get('accessToken')
@@ -160,8 +162,61 @@ def oauth_token():
     return None, None
 
 
-def env_names():
-    return ', '.join(sorted(k for k in os.environ if re.match(r'(CLAUDE|ANTHROPIC)', k))) or 'none'
+PASS_ENV = ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'SSL_CERT_FILE',
+            'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'LANG')
+
+
+def window_key(name):
+    return 'weekly' if name == 'seven_day' else 'weekly_' + name[10:] if name.startswith('seven_day_') else name
+
+
+def probe_usage(tok):
+    """(windows, error) from one tiny Haiku request through Claude Code, signed in with `tok`.
+
+    Cloud sessions sign Claude Code in through the platform, so a script there has no token of its own, and a
+    `claude setup-token` token may only run the model (the usage endpoint wants the user:profile scope). Claude Code's
+    stream output carries a rate_limit_event whose unifiedWindows hold each window's utilization (0-1) and reset time.
+    The request runs in a clean environment (only the token, PATH, HOME, proxy and CA settings) with its own config
+    dir, no tools, no MCP servers and no saved session, so it costs one short Haiku call per reading."""
+    exe = shutil.which('claude') or os.environ.get('CLAUDE_CODE_EXECPATH')
+    if not exe or not os.access(exe, os.X_OK):
+        return {}, 'no claude CLI here to read the rate-limit report with'
+    cfg = os.path.join(WORK, 'probe')
+    os.makedirs(cfg, exist_ok=True)
+    env = {k: os.environ[k] for k in PASS_ENV if k in os.environ}
+    env.update(HOME=os.path.expanduser('~'), PATH=os.environ.get('PATH', '/usr/bin:/bin'), TERM='dumb',
+               CLAUDE_CODE_OAUTH_TOKEN=tok, CLAUDE_CONFIG_DIR=cfg)
+    cmd = [exe, '-p', 'Reply with the single word ok.', '--model', 'haiku', '--max-turns', '1', '--tools', '',
+           '--strict-mcp-config', '--no-session-persistence', '--output-format', 'stream-json', '--verbose']
+    try:
+        out = subprocess.run(cmd, cwd=cfg, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {}, f'the claude probe did not run: {type(e).__name__}'
+    info, result = None, {}
+    for line in out.stdout.splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get('type') == 'rate_limit_event':
+            info = d.get('rate_limit_info') or {}
+        elif d.get('type') == 'result':
+            result = d
+    if info is None:
+        why = result.get('result') or out.stderr.strip() or f'exit {out.returncode}'
+        return {}, 'Claude Code gave no rate-limit report: ' + ' '.join(str(why).replace(tok, '…').split())[:200]
+    wins = dict(info.get('unifiedWindows') or {})
+    if not wins and info.get('rateLimitType') and isinstance(info.get('utilization'), (int, float)):
+        wins[info['rateLimitType']] = {'utilization': info['utilization'], 'resetsAt': info.get('resetsAt')}
+    w = {}
+    for name, v in wins.items():
+        if isinstance(v, dict) and isinstance(v.get('utilization'), (int, float)):
+            r = v.get('resetsAt')
+            w[window_key(name)] = {'used': round(v['utilization'] * 100, 1),
+                                   'resets': iso(datetime.datetime.fromtimestamp(r).astimezone()) if isinstance(r, (int, float)) else r}
+    if not w:
+        return {}, f'the rate-limit report had no usage windows (status {info.get("status")})'
+    return w, None
 
 
 def fetch_usage():
@@ -173,10 +228,17 @@ def fetch_usage():
     cache = read_json(CACHE, {}) or {}
     if cache.get('windows') and time.time() - cache.get('t', 0) < USAGE_GAP:
         return cache['windows'], cache['source'], None
+    if os.environ.get('RUNLOG_OAUTH_TOKEN', '').strip():
+        w, err = probe_usage(os.environ['RUNLOG_OAUTH_TOKEN'].strip())
+        if err:
+            return {}, None, err
+        src = "Claude Code's rate-limit report (one Haiku request signed in with RUNLOG_OAUTH_TOKEN)"
+        write_json(CACHE, {'t': time.time(), 'windows': w, 'source': src})
+        return w, src, None
     tok, where = oauth_token()
     if not tok:
-        return {}, None, ('no Claude OAuth token in this environment (CLAUDE_CODE_OAUTH_TOKEN is unset and there is '
-                          f'no ~/.claude/.credentials.json); CLAUDE_/ANTHROPIC_ variables present: {env_names()}')
+        return {}, None, ('no Claude OAuth token for the usage endpoint: set RUNLOG_OAUTH_TOKEN to a token from '
+                          '`claude setup-token` in the cloud environment (README, "Run log")')
     req = urllib.request.Request(USAGE_URL, headers={
         'Authorization': f'Bearer {tok}', 'anthropic-beta': 'oauth-2025-04-20', 'Accept': 'application/json', **UA})
     try:
