@@ -1468,13 +1468,14 @@ REFRESH_JS = r"""
     moves.sort((a, b) => (b.d == null) - (a.d == null) || Math.abs(b.d || 0) - Math.abs(a.d || 0));
     const seenTok = new Set(), uniq = moves.filter(m => !seenTok.has(m.token) && seenTok.add(m.token));
     dlg.querySelector('#moves-since').textContent = `Since ${sinceText}`;
-    list.innerHTML = uniq.slice(0, TOP).map((m, i) => {
+    list.innerHTML = uniq.slice(0, TOP).map(m => {
       const tone = m.good ? 'up' : 'down';
       const d = m.d == null ? (m.now == null ? 'gone' : 'new')
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
       const sub = [m.side, m.kind === 'bid' ? 'your position, best bid' : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '']
         .filter(Boolean).join(' · ');
-      return `<li><a href="#" data-i="${i}">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
+      // the market on Polymarket, in a new tab so the refreshed prices stay on screen
+      return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
              `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div>` +
              `<span class="fair">${m.fair == null ? 'no fair value yet' : 'fair ' + fv(m.fair)}</span></li>`;  // as built, never recomputed
     }).join('');
@@ -1485,10 +1486,6 @@ REFRESH_JS = r"""
     dlg.querySelector('#moves-foot').textContent = uniq.length
       ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position. Fair is my estimate from the build, not redone.`
       : '';
-    list.querySelectorAll('a').forEach(a => a.addEventListener('click', ev => {  // jump to the row behind a move
-      ev.preventDefault(); dlg.close();
-      uniq[+a.dataset.i].el.scrollIntoView({ block: 'center' });
-    }));
     if (!dlg.open) dlg.showModal();
     list.scrollTop = 0;
   };
@@ -1523,8 +1520,8 @@ REFRESH_JS = r"""
         if (d != null && Math.abs(d) < 5e-4) continue;
         const up = d == null ? now != null : d > 0;  // the quote rose, or one appeared
         const a = el.querySelector('a'), side = el.querySelector('.side'), yr = el.tagName === 'TR' && cell(el, 'Per yr');
-        moves.push({ el, token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
-                     fair: num(el.dataset.fair),
+        moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
+                     fair: num(el.dataset.fair), href: a ? a.getAttribute('href') : '#',
                      name: a ? a.textContent : '', side: side ? side.textContent : '', ann: yr ? yr.textContent.trim() : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
