@@ -1191,6 +1191,7 @@ dialog.moves::backdrop {{ background: rgb(8 12 20 / .5); }}
 .moves-list li:last-child {{ border-bottom: 0; }}
 .moves-list a {{ font-weight: 600; line-height: 1.35; }}
 .moves-list .sub {{ grid-column: 1; }}
+.moves-list .fair {{ grid-column: 2 / -1; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
 .moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
 .moves-list .chg {{ color: var(--muted); }}
 .moves-list .d {{ font-weight: 600; }}
@@ -1259,6 +1260,13 @@ footer p {{ margin: 0; }}
   .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
   .stat.goldk {{ padding-left: 12px; }}
   .boxes {{ grid-template-columns: 1fr; }}
+  /* the moves modal: the name takes its own line, the numbers sit under it */
+  .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
+  .moves-list a {{ grid-column: 1 / -1; }}
+  .moves-list .sub {{ grid-row: 2 / span 2; }}
+  .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
+  .moves-list .d {{ grid-column: 3; grid-row: 2; }}
+  .moves-list .fair {{ grid-row: 3; }}
 }}
 @media (max-width: 1040px) {{
   table.hunt thead {{ display: none; }}
@@ -1467,14 +1475,15 @@ REFRESH_JS = r"""
       const sub = [m.side, m.kind === 'bid' ? 'your position, best bid' : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '']
         .filter(Boolean).join(' · ');
       return `<li><a href="#" data-i="${i}">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
-             `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div></li>`;
+             `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div>` +
+             `<span class="fair">${m.fair == null ? 'no fair value yet' : 'fair ' + fv(m.fair)}</span></li>`;  // as built, never recomputed
     }).join('');
     list.hidden = !uniq.length;
     let empty = dlg.querySelector('.moves-empty');
     if (!uniq.length && !empty) { empty = document.createElement('p'); empty.className = 'moves-empty'; list.after(empty); }
     if (empty) { empty.hidden = !!uniq.length; empty.textContent = 'No price has moved.'; }
     dlg.querySelector('#moves-foot').textContent = uniq.length
-      ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position.`
+      ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position. Fair is my estimate from the build, not redone.`
       : '';
     list.querySelectorAll('a').forEach(a => a.addEventListener('click', ev => {  // jump to the row behind a move
       ev.preventDefault(); dlg.close();
@@ -1515,6 +1524,7 @@ REFRESH_JS = r"""
         const up = d == null ? now != null : d > 0;  // the quote rose, or one appeared
         const a = el.querySelector('a'), side = el.querySelector('.side'), yr = el.tagName === 'TR' && cell(el, 'Per yr');
         moves.push({ el, token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
+                     fair: num(el.dataset.fair),
                      name: a ? a.textContent : '', side: side ? side.textContent : '', ann: yr ? yr.textContent.trim() : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
