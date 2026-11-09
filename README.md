@@ -82,6 +82,11 @@ in an event under one of the swept tags that isn't sports, crypto or noise (`can
 
 The page's stamp shows how many candidate markets were researched that day.
 
+Claude Code caps WebSearch at 200 calls by default, shared by the main agent and every subagent, which the review
+outgrew (on 9 Nov 2026 the subagents ran out partway and later batches kept the previous day's values).
+`.claude/settings.json` raises the cap to 4,000 with `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`. The run log shows each
+subagent's searches, so check there whether the cap still binds.
+
 State lives in the deployment, not in git: `build` writes `site/hunt/state.json` (picks, fair values, notes, seen
 event ids, the full review's last fair value per market) and `site/hunt/wallets.json` (leaderboard PnL cache), `deploy.py` publishes them, and the next `pull`
 reads them back. A failed run therefore leaves the last good book in place. `hunt/seed.json` is the 30 Oct 2026
