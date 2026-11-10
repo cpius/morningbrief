@@ -4,7 +4,7 @@ The line is `trade_pnl` from the Data API, the number polymarket.com plots under
 new value on some hours, so a swing runs from one recorded value to another. To say what drove a swing, every position
 is rebuilt from the wallet's fills and the Data API's price history and its P/L is compared across the same two moments.
 """
-import bisect, datetime, html, json, os, re, time, urllib.parse
+import bisect, datetime, json, os, re, time, urllib.parse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -271,8 +271,7 @@ def build(get, pages, wallet, now):
             line.append((t, v - base))
             if nxt[0] - HOUR > t:
                 line.append((nxt[0] - HOUR, v - base))
-        out.append(dict(key=key, label=label, t0=start, t1=last_t, change=last_v - base, line=line, notes=notes,
-                        recorded=snaps[-1][0], opened=first_t))
+        out.append(dict(key=key, label=label, t0=start, t1=last_t, change=last_v - base, line=line, notes=notes))
     return out
 
 
@@ -664,15 +663,6 @@ def render(periods):
     for title, short in sorted({(n['drivers'][0]['title'], n['drivers'][0]['short']) for p in periods for n in p['notes']
                                 if n['drivers'] and n['drivers'][0]['by_rule']}):
         print(f'  pnl: callout "{short}" was made by rule; add a name for "{question(title)}" to labels.json to change it')
-    same = [d['key'] for d in data if 'same' in d]
-    opened = datetime.datetime.fromtimestamp(whole['opened'])
-    note = ('The line is Polymarket\'s own profit/loss figure, before fees, last recorded '
-            f'{when(whole["recorded"])}. Polymarket records a new value on some hours only, so the line runs flat in between. '
-            'The numbers mark each period\'s largest swings. The positions listed under a swing are rebuilt from your fills '
-            'and Polymarket\'s price history, so they can add up to a few dollars more or less than the swing.')
-    if same:
-        note += (f' {" and ".join(same)} match ALL because the wallet\'s first trade was on '
-                 f'{opened.day} {opened:%b %Y}.')
     tabs = ''.join(f'<button type="button" role="tab" data-k="{p["key"]}" aria-selected="{"true" if p["key"] == "1D" else "false"}">'
                    f'{p["key"]}</button>' for p in periods)
     return (f'<section class="pnl" id="pnl" aria-label="Profit and loss">'
@@ -680,7 +670,6 @@ def render(periods):
             f'<div class="pnl-tabs" role="tablist" aria-label="Period">{tabs}</div></div>'
             '<div class="pnl-plot"><svg role="img"></svg><div class="pnl-tip" hidden></div></div>'
             '<ol class="pnl-notes"></ol>'
-            f'<p class="wx-note">{html.escape(note)}</p>'
             f'<script type="application/json" id="pnl-data">{json.dumps(data, separators=(",", ":")).replace("<", chr(92) + "u003c")}</script>'
             f'<style>{CSS}</style><script>{JS}</script></section>')
 
