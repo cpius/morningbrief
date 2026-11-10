@@ -9,7 +9,7 @@ Records each stage of a run (who ran it, model, effort, start, time spent, exit 
     python3 runlog.py run <key> "<title>" -- <command ...>   # time a script; its output passes through unchanged
     python3 runlog.py begin <key> "<title>"                 # a stage the agent does itself
     python3 runlog.py end <key> [--status ok|warn|failed|skipped] [--note "..."] [--metric k=v ...]
-    python3 runlog.py jobs <key> --model claude-sonnet-5-5 --effort medium < lines   # one line per subagent
+    python3 runlog.py jobs <key> --model claude-opus-5-5 --effort high < lines   # one line per subagent
     python3 runlog.py note "<text>" [--level info|warn|error]
     python3 runlog.py metric k=v ...                        # run-level facts (value, positions, picks ...)
     python3 runlog.py finish --status ok|partial|failed --summary "<one line>"

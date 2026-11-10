@@ -37,7 +37,7 @@ the weekly plan was left at each point and what each stage used.
     python3 runlog.py run refresh "Refresh brief" -- python3 refresh.py    # times a script; output passes through
     python3 runlog.py begin research "Why it moved research"             # a stage the agent does itself ...
     python3 runlog.py end research --metric missing=15 --note "..."       # ... and its end
-    python3 runlog.py jobs review --model claude-sonnet-5-5 --effort medium < lines   # one line per subagent
+    python3 runlog.py jobs review --model claude-opus-5-5 --effort high < lines   # one line per subagent
     python3 runlog.py note|metric|finish|usage ...
 
 - Data: `site/log/index.json` (one summary per run, last 180) and `site/log/runs/<id>.json` (full log, last 30); the
@@ -89,7 +89,7 @@ many Starship launches reach space in 2026?" stays in: its "less than 5" rung is
    book, the book's side and fair value. Events tagged `recurring` also carry `history`: how the last 4 resolved events
    in their Gamma series went (Starship flights 11–14, past RBNZ decisions, last year's "before 2026" question), as the
    reviewer's base rate.
-2. The routine gives each batch to a research subagent (Sonnet, several at a time). It reads the rules, searches the
+2. The routine gives each batch to a research subagent (Opus 5.5 at high effort, 10 at a time). It reads the rules, searches the
    news (since the last review, if there is one) and writes `hunt/work/reviews/bNNN.json`:
    `[{"market": "<id>", "fair": <probability of YES>, "why": "<dated reason>", "settles": "<YYYY-MM-DD>"}, ...]`.
    `settles` is optional: the day the market will most likely be decided when that is well before its end date (a
