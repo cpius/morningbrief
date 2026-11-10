@@ -7,6 +7,7 @@ trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 import datetime, html, json, os, time, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
 
+import pnl
 from favicon import FAVICON
 
 os.environ['TZ'] = 'Europe/Copenhagen'  # cloud runners are on UTC; all times on the page are Copenhagen
@@ -48,8 +49,9 @@ TODAY = SNAP.date()
 
 def price_24h_ago(asset):
     """(price at T0, last price, 24h series) from CLOB history; Nones when the market has no recent history."""
-    h = get(f'https://clob.polymarket.com/prices-history?market={asset}'
-            f'&startTs={T0 - 7200}&endTs={NOW}&fidelity=10').get('history', [])
+    # retried: the CLOB sometimes answers 500 "pg: connection pool timeout" for one request in a dozen
+    h = pnl.retrying(get, f'https://clob.polymarket.com/prices-history?market={asset}'
+                     f'&startTs={T0 - 7200}&endTs={NOW}&fidelity=10').get('history', [])
     if not h:
         return None, None, []
     before = [x for x in h if x['t'] <= T0]
@@ -549,6 +551,16 @@ def trades_section(trades):
             '</section>')
 
 
+def pnl_section():
+    """Polymarket's Profit/Loss chart with its swings labelled (pnl.py); the brief still builds without it."""
+    try:
+        return pnl.section(get, pages, WALLET, NOW)
+    except Exception as e:
+        print(f'  pnl: chart left out ({type(e).__name__}: {e})')
+        return ''
+
+
+pnl_html = pnl_section()
 trades_html = trades_section(recent_trades())
 weather_html = weather_section()
 hunt_html = hunt_section()
@@ -757,6 +769,8 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
     <div class="stat"><span class="k">To win</span><span class="v">{usd(tot_win)}</span><span class="s">if every position pays $1</span></div>
     <div class="stat hot"><span class="k">24h change</span><span class="v {tone(d24_all)}">{usd(d24_all, True)}</span><span class="s">open {usd(tot_d24, True)} · closed {usd(closed_d24, True)}</span></div>
   </section>
+
+  {pnl_html}
 
   <div class="movers">
     <span class="lbl">Biggest 24h moves</span>

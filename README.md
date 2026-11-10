@@ -7,6 +7,10 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
 - `python3 refresh.py` fetches Polymarket positions/activity/prices and Open-Meteo forecasts, then writes
   `portfolio.html` and `site/index.html`. It uses only the standard library. If `hunt/hunt.py build` ran today,
   the page also gets a short "Mispricing hunt" section linking to `/hunt/`.
+- `pnl.py` builds the Profit/Loss card under the summary: the line polymarket.com plots (`trade_pnl` from
+  `/v2/user-pnl`) for 1D, 1W, 1M, 1Y, YTD and ALL, with each period's largest swings numbered on the chart and
+  listed below with the positions that drove them. Those are rebuilt from the wallet's fills and `/v2/prices-history`,
+  the marks the P/L snapshots use. `python3 pnl.py` prints the swings; if the API fails, the brief builds without the card.
 - `research.json` holds "Why it moved" notes, keyed by asset id. The script prints `research MISSING: ...` for
   each position that moved at least 2¢ or $10 without a note for the current 24h window.
 - `python3 deploy.py` posts everything under `site/` to the Vercel API as a production deployment
