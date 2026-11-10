@@ -314,11 +314,16 @@ JS = r"""
     if (a.d === b.d && a.mon === b.mon) return `${a.wd} ${a.d} ${a.mon}, ${a.hm}–${b.hm}`;
     return `${a.wd} ${a.d} ${a.mon} ${a.hm} – ${b.wd} ${b.d} ${b.mon} ${b.hm}`;
   };
-  const brief = (title, max = 34) => {
-    let s = title.replace(/\?$/, '');
+  // Callout name: the question without "Will", its deadline ("in 2026", "by December 31, 2026") or the question mark.
+  const WHEN = /\s+(?:in|by|before|after|until|through|on)\s+(?:the\s+)?(?:end\s+of\s+)?(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?(?:,?\s+\d{4})?|\d{4})$/i;
+  const brief = (title, max = 30) => {
+    let s = title.trim().replace(/\?$/, '').replace(/^Will\s+(?:the\s+)?/i, '');
+    while (WHEN.test(s)) s = s.replace(WHEN, '');
+    s = s ? s.charAt(0).toUpperCase() + s.slice(1) : title;
     if (s.length <= max) return s;
-    s = s.slice(0, max);
-    return s.slice(0, Math.max(s.lastIndexOf(' '), max - 10)) + '…';
+    s = s.slice(0, max + 1);
+    if (s.lastIndexOf(' ') >= 10) s = s.slice(0, s.lastIndexOf(' '));  // cut between words
+    return s.replace(/(?:[\s,;:·-]+(?:a|an|and|as|at|by|for|his|her|in|of|on|or|the|to))*[\s,;:·-]*$/i, '') + '…';
   };
   const niceStep = raw => {
     const k = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / k;
@@ -470,7 +475,7 @@ JS = r"""
       const [ax, ay] = spots[i];
       const g = el('g', { class: 'callout' }, callouts);
       const amt = el('text', { class: 'amt ' + tone(n.d) }, g, usd(n.d, 0));
-      const who = n.drivers.length ? el('text', { class: 'who' }, g, `${brief(n.drivers[0].title)} · ${n.drivers[0].side}`) : null;
+      const who = n.drivers.length ? el('text', { class: 'who' }, g, brief(n.drivers[0].title)) : null;
       const w = Math.max(amt.getComputedTextLength(), who ? who.getComputedTextLength() : 0), ht = who ? 30 : 15;
       let best = null;
       for (const bx of [ax - 14 - w, ax + 14, ax - w / 2, ax - 14 - w * 0.75, ax + 14 - w * 0.25]) {
