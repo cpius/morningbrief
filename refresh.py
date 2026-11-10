@@ -777,6 +777,8 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
     {''.join(f'<span>{html.escape(short(r["title"]))} {r["outcome"]} <b class="{tone(r["d24"])}">{usd(r["d24"], True)}</b></span>' for r in movers)}
   </div>
 
+  {hunt_html}
+
   <div class="table-box">
     <table>
       <thead><tr><th>Market</th><th>Avg → Now</th><th style="text-align:left">24h chart</th><th class="d24h">Last 24h</th></tr></thead>
@@ -790,8 +792,6 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
   </div>
 
   {trades_html}
-
-  {hunt_html}
 
   {weather_html}
 
