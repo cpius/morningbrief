@@ -11,6 +11,9 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   `/v2/user-pnl`) for 1D, 1W, 1M, 1Y, YTD and ALL, with each period's largest swings numbered on the chart and
   listed below with the positions that drove them. Those are rebuilt from the wallet's fills and `/v2/prices-history`,
   the marks the P/L snapshots use. `python3 pnl.py` prints the swings; if the API fails, the brief builds without the card.
+  The chart's callouts use the short names in `labels.json` (market question without its deadline → name, e.g.
+  "Supreme Court vacancy"). A market missing from it gets a rule-made name and a `pnl: callout ... was made by rule`
+  line in the output; add an entry to fix a clumsy one.
 - `research.json` holds "Why it moved" notes, keyed by asset id. The script prints `research MISSING: ...` for
   each position that moved at least 2¢ or $10 without a note for the current 24h window.
 - `python3 deploy.py` posts everything under `site/` to the Vercel API as a production deployment

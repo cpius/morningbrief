@@ -4,7 +4,7 @@ The line is `trade_pnl` from the Data API, the number polymarket.com plots under
 new value on some hours, so a swing runs from one recorded value to another. To say what drove a swing, every position
 is rebuilt from the wallet's fills and the Data API's price history and its P/L is compared across the same two moments.
 """
-import bisect, datetime, html, json, time, urllib.parse
+import bisect, datetime, html, json, os, re, time, urllib.parse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -20,6 +20,69 @@ DRIVER_MIN = 0.05  # ... each at least this share of the swing
 
 def cents(p):
     return f'{p * 100:.1f}'.rstrip('0').rstrip('.') + '¢'
+
+
+# ---- short market names for the chart's callouts --------------------------------------------------------
+# labels.json maps a market question, without its deadline, to a hand-written name ("Supreme Court vacancy").
+# A market it does not know gets a name from the rules below. Neither ever ends in "…".
+LABELS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'labels.json')
+NAME_MAX = 30  # characters a rule-made name may run to
+MONTHS = (r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?'
+          r'|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)')
+DEADLINE = re.compile(rf'\s+(?:in|by|before|after|until|through|on)\s+(?:the\s+)?(?:end\s+of\s+)?'
+                      rf'(?:{MONTHS}(?:\s+\d{{1,2}}(?:st|nd|rd|th)?)?(?:,?\s+\d{{4}})?|\d{{4}})$', re.I)
+WORD = r'(?:(?<=\s)|^)'  # the start of a word, but not the tail of a hyphenated name ("Wan-an")
+TIGHTER = [(r'\bPrime Minister\b', 'PM'), (r'\bUnited Arab Emirates\b', 'UAE'), (r'\bUnited States\b|\bU\.S\.(?=\s|$)', 'US'),
+           (r'\bGulf Cooperation Council\b', 'GCC'), (r'\bmilitary clash\b', 'clash'), (WORD + r'be part of\b', 'in'),
+           (WORD + r'be in\b', 'in'), (WORD + r'be (?:the )?next\b', 'next'),
+           (WORD + r'(?:officially|formally|publicly)\s+', ''), (WORD + r'(?:the|a|an|his|her|their)\s+', '')]
+PREPOSITION = re.compile(r'\s(?:of|in|as|by|against|after|from|to|with|on|for|through|over|at)\s')
+DANGLING = {'a', 'an', 'and', 'as', 'at', 'be', 'by', 'for', 'from', 'in', 'next', 'of', 'on', 'or', 'the', 'to', 'with', 'x'}
+
+
+def question(title):
+    """A market's question without "?" or its deadline: every rung of a date ladder gives the same text."""
+    s = re.sub(r'\s+', ' ', title).strip().rstrip('?').strip()
+    while DEADLINE.search(s):
+        s = DEADLINE.sub('', s)
+    return s
+
+
+def load_labels():
+    try:
+        with open(LABELS_FILE) as fh:
+            return {question(k).lower(): v for k, v in json.load(fh).items()}
+    except (OSError, ValueError) as e:
+        print(f'  pnl: no labels.json, callout names come from the rules ({e})')
+        return {}
+
+
+def rule_name(title):
+    """A short name worked out from the question itself, for a market labels.json does not cover."""
+    s = re.sub(r'^Will\s+', '', question(title), flags=re.I)
+    s = re.sub(r'^(.+?)\s+out\s+as\s+.+$', r'\1 out', s, flags=re.I)  # "X out as Secretary of Defense" -> "X out"
+    for pattern, shorter in TIGHTER:
+        s = re.sub(pattern, shorter, s, flags=re.I)
+    s = re.sub(r'\s+', ' ', s).strip()
+    won = re.match(r'^(.+?) (wins?) (.+)$', s)
+    if len(s) > NAME_MAX and won:  # "X win <long object>": keep the object's last words, with its year if that fits
+        head, words = f'{won[1]} {won[2]} ', won[3].split()
+        tails = [' '.join(words[i:]) for i in range(len(words)) if words[i].lower() not in DANGLING]
+        if re.fullmatch(r'\d{4}', words[0]):
+            tails.insert(1, f'{words[0]} {words[-1]}')
+        s = head + next((t for t in tails if len(head + t) <= NAME_MAX), words[-1])
+    while len(s) > NAME_MAX:  # drop a trailing "of Germany", "against Iran", ...
+        cuts = [c for c in PREPOSITION.finditer(s) if ' ' in s[:c.start()]]
+        if not cuts:
+            break
+        s = s[:cuts[-1].start()]
+    while len(s) > NAME_MAX and ' ' in s:
+        s = s.rsplit(' ', 1)[0]
+    words = s.split()
+    while len(words) > 1 and words[-1].lower().strip(',;:') in DANGLING:
+        words.pop()
+    s = ' '.join(words).rstrip(',;:-')
+    return s[:1].upper() + s[1:]
 
 
 def retrying(get, url, tries=4):
@@ -66,6 +129,7 @@ class Book:
 
     def __init__(self, get, pages, wallet, now):
         self.now = now
+        self.labels = load_labels()
         self.pages = lambda url: retrying(pages, url, tries=6)
         act = self.pages(f'{DATA}/activity?user={wallet}&limit=500')
         self.events, self.meta = defaultdict(list), {}
@@ -147,7 +211,9 @@ class Book:
                 move = f'new, now {cents(p1)}' if p1 is not None else 'bought and sold'
             else:
                 move = f"{cents(p0)} → {cents(p1) if p1 is not None else 'sold'}"
+            known = self.labels.get(question(a['title']).lower())
             out.append(dict(d=v1 - v0, title=a['title'], side=a['outcome'], move=move,
+                            short=known or rule_name(a['title']), by_rule=not known,
                             url=f"https://polymarket.com/event/{a['event_slug']}" if a.get('event_slug') else ''))
         return sorted(out, key=lambda r: -abs(r['d']))
 
@@ -314,17 +380,6 @@ JS = r"""
     if (a.d === b.d && a.mon === b.mon) return `${a.wd} ${a.d} ${a.mon}, ${a.hm}–${b.hm}`;
     return `${a.wd} ${a.d} ${a.mon} ${a.hm} – ${b.wd} ${b.d} ${b.mon} ${b.hm}`;
   };
-  // Callout name: the question without "Will", its deadline ("in 2026", "by December 31, 2026") or the question mark.
-  const WHEN = /\s+(?:in|by|before|after|until|through|on)\s+(?:the\s+)?(?:end\s+of\s+)?(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?(?:,?\s+\d{4})?|\d{4})$/i;
-  const brief = (title, max = 30) => {
-    let s = title.trim().replace(/\?$/, '').replace(/^Will\s+(?:the\s+)?/i, '');
-    while (WHEN.test(s)) s = s.replace(WHEN, '');
-    s = s ? s.charAt(0).toUpperCase() + s.slice(1) : title;
-    if (s.length <= max) return s;
-    s = s.slice(0, max + 1);
-    if (s.lastIndexOf(' ') >= 10) s = s.slice(0, s.lastIndexOf(' '));  // cut between words
-    return s.replace(/(?:[\s,;:·-]+(?:a|an|and|as|at|by|for|his|her|in|of|on|or|the|to))*[\s,;:·-]*$/i, '') + '…';
-  };
   const niceStep = raw => {
     const k = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / k;
     return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * k;
@@ -475,12 +530,12 @@ JS = r"""
       const [ax, ay] = spots[i];
       const g = el('g', { class: 'callout' }, callouts);
       const amt = el('text', { class: 'amt ' + tone(n.d) }, g, usd(n.d, 0));
-      const who = n.drivers.length ? el('text', { class: 'who' }, g, brief(n.drivers[0].title)) : null;
+      const who = n.drivers.length ? el('text', { class: 'who' }, g, n.drivers[0].short) : null;
       const w = Math.max(amt.getComputedTextLength(), who ? who.getComputedTextLength() : 0), ht = who ? 30 : 15;
       let best = null;
       for (const bx of [ax - 14 - w, ax + 14, ax - w / 2, ax - 14 - w * 0.75, ax + 14 - w * 0.25]) {
         const [mn, mx] = lineSpan(bx - 4, bx + w + 4);
-        for (const by of [ay - ht / 2, ay - 16 - ht, ay + 16, mn - 7 - ht, mx + 7, y(0) - 5 - ht, y(0) + 5]) {
+        for (const by of [ay - ht / 2, ay - 16 - ht, ay + 16, mn - 7 - ht, mx + 7, y(0) - 5 - ht, y(0) + 5, ay - 22 - 2 * ht, ay + 22 + ht]) {
           if (by + ht > mn - 7 && by < mx + 7) continue;  // would sit on the line
           if (by + ht > y(0) - 4 && by < y(0) + 4) continue;  // ... or on the zero line
           const b = { x0: bx, y0: by, x1: bx + w, y1: by + ht };
@@ -598,13 +653,17 @@ def render(periods):
                          line=[[t, round(v, 2)] for t, v in p['line']],
                          notes=[dict(t0=n['t0'], t1=n['t1'], at=n['at'], v=round(n['v'], 2), d=round(n['d'], 2),
                                      rest=None if n['rest'] is None else round(n['rest'], 2),
-                                     drivers=[dict(r, d=round(r['d'], 2)) for r in n['drivers']]) for n in p['notes']]))
+                                     drivers=[{k: round(v, 2) if k == 'd' else v for k, v in r.items() if k != 'by_rule'}
+                                              for r in n['drivers']]) for n in p['notes']]))
     when = lambda t, f='%a %d %b %H:%M': f'{datetime.datetime.fromtimestamp(t):{f}}'
     for p in periods:
         print(f"  pnl {p['key']:3} {p['change']:+,.2f}" + ''.join(
             f"; {n['d']:+,.0f} {when(n['t0'], '%d %b %H:%M')}–{when(n['t1'], '%d %b %H:%M')}"
             + (f" ({n['drivers'][0]['title'][:38]} {n['drivers'][0]['side']} {n['drivers'][0]['d']:+,.0f})" if n['drivers'] else '')
             for n in (p['notes'] if 'same' not in data[periods.index(p)] else [])))
+    for title, short in sorted({(n['drivers'][0]['title'], n['drivers'][0]['short']) for p in periods for n in p['notes']
+                                if n['drivers'] and n['drivers'][0]['by_rule']}):
+        print(f'  pnl: callout "{short}" was made by rule; add a name for "{question(title)}" to labels.json to change it')
     same = [d['key'] for d in data if 'same' in d]
     opened = datetime.datetime.fromtimestamp(whole['opened'])
     note = ('The line is Polymarket\'s own profit/loss figure, before fees, last recorded '
