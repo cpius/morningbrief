@@ -281,6 +281,17 @@ CSS = """
 .pnl h2 { margin: 0 0 2px; }
 .pnl-v { font-family: var(--mono); font-size: 28px; font-weight: 500; letter-spacing: -.02em; }
 .pnl-k { font-size: 13px; color: var(--muted); margin-left: 10px; }
+.pnl-ctl { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
+.pnl-refresh { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; font: 600 12.5px var(--body); color: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; cursor: pointer; font-variant-numeric: tabular-nums; }
+.pnl-refresh:hover { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.pnl-refresh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pnl-refresh:disabled { cursor: progress; opacity: .7; }
+.pnl-refresh .when { font: 500 12px var(--mono); color: var(--muted); }
+.pnl-refresh .when:empty { display: none; }
+.pnl-refresh.busy span[aria-hidden] { animation: pnl-spin 1s linear infinite; }
+.pnl-refresh.err { color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }
+@keyframes pnl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pnl-refresh.busy span[aria-hidden] { animation: none; } }
 .pnl-tabs { display: flex; gap: 2px; }
 .pnl-tabs button { font: 600 12.5px var(--mono); color: var(--muted); background: none; border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 .pnl-tabs button:hover { color: var(--ink); background: var(--surface-2); }
@@ -343,9 +354,13 @@ JS = r"""
 (() => {
   const root = document.getElementById('pnl');
   if (!root) return;
-  const periods = JSON.parse(document.getElementById('pnl-data').textContent);
-  const byKey = Object.fromEntries(periods.map(p => [p.key, p]));
-  for (const p of periods) if (p.same) Object.assign(p, byKey[p.same], { key: p.key, label: p.label });
+  let periods, byKey;
+  const load = data => {
+    periods = data;
+    byKey = Object.fromEntries(periods.map(p => [p.key, p]));
+    for (const p of periods) if (p.same) Object.assign(p, byKey[p.same], { key: p.key, label: p.label });
+  };
+  load(JSON.parse(document.getElementById('pnl-data').textContent));
 
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs, parent, text) => {
@@ -629,6 +644,234 @@ JS = r"""
       next.focus(); next.click();
     });
   });
+  // ---- Refresh: build() from pnl.py, redone in the browser against the Data API (it allows any origin) ----
+  const cfg = JSON.parse(document.getElementById('pnl-cfg').textContent);
+  const DATA = 'https://data-api.polymarket.com/v2', HOUR = 3600, DAY = 86400;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  async function get(url, tries = 4) {  // the Data API sheds load with 503s; wait a little longer each time
+    for (let n = 0; ; n++) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`Polymarket answered ${r.status}`);
+        return await r.json();
+      } catch (e) {
+        if (n >= tries - 1) throw e;
+        await sleep(1500 * (n + 1));
+      }
+    }
+  }
+  async function pages(url) {
+    const rows = [];
+    let cursor = null;
+    do {
+      const d = await get(url + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''), 6);
+      rows.push(...d.data);
+      cursor = d.pagination && d.pagination.next_cursor;
+    } while (cursor);
+    return rows;
+  }
+  const cents = p => {  // as Python formats it: an exact tie (98.25) rounds to the even digit (98.2), not up
+    const x = p * 100, tie = x * 4 % 4 === 1;
+    return (tie ? x - 0.01 : x).toFixed(1).replace(/0+$/, '').replace(/\.$/, '') + '¢';
+  };
+
+  // Short callout names: labels.json first, else the rules from rule_name().
+  const reDeadline = new RegExp(cfg.deadline, 'i'), reCut = new RegExp(cfg.preposition, 'g');
+  const tighter = cfg.tighter.map(([p, s]) => [new RegExp(p, 'gi'), s]), dangling = new Set(cfg.dangling);
+  const question = title => {
+    let s = title.replace(/\s+/g, ' ').trim().replace(/\?+$/, '').trim();
+    while (reDeadline.test(s)) s = s.replace(reDeadline, '');
+    return s;
+  };
+  function ruleName(title) {
+    let s = question(title).replace(/^Will\s+/i, '').replace(/^(.+?)\s+out\s+as\s+.+$/i, '$1 out');
+    for (const [re, shorter] of tighter) s = s.replace(re, shorter);
+    s = s.replace(/\s+/g, ' ').trim();
+    const won = s.match(/^(.+?) (wins?) (.+)$/);
+    if (s.length > cfg.nameMax && won) {
+      const head = `${won[1]} ${won[2]} `, words = won[3].split(/\s+/).filter(Boolean), tails = [];
+      words.forEach((w, i) => { if (!dangling.has(w.toLowerCase())) tails.push(words.slice(i).join(' ')); });
+      if (/^\d{4}$/.test(words[0])) tails.splice(1, 0, `${words[0]} ${words[words.length - 1]}`);
+      s = head + (tails.find(t => (head + t).length <= cfg.nameMax) ?? words[words.length - 1]);
+    }
+    while (s.length > cfg.nameMax) {
+      const cuts = [...s.matchAll(reCut)].filter(c => s.slice(0, c.index).includes(' '));
+      if (!cuts.length) break;
+      s = s.slice(0, cuts[cuts.length - 1].index);
+    }
+    while (s.length > cfg.nameMax && s.includes(' ')) s = s.slice(0, s.lastIndexOf(' '));
+    const words = s.split(/\s+/).filter(Boolean);
+    while (words.length > 1 && dangling.has(words[words.length - 1].toLowerCase().replace(/^[,;:]+|[,;:]+$/g, ''))) words.pop();
+    s = words.join(' ').replace(/[,;:-]+$/, '');
+    return s.slice(0, 1).toUpperCase() + s.slice(1);
+  }
+
+  function swings(vals, share) {
+    if (vals.length < 2) return [];
+    const thr = (Math.max(...vals) - Math.min(...vals)) * share;
+    if (thr <= 0) return [];
+    let lo = 0, hi = 0, pivots = null, up = null, ext = null;
+    vals.forEach((v, i) => {
+      if (pivots === null) {
+        if (v < vals[lo]) lo = i;
+        if (v > vals[hi]) hi = i;
+        if (vals[hi] - vals[lo] >= thr) { pivots = [Math.min(lo, hi)]; ext = Math.max(lo, hi); up = lo < hi; }
+      } else if (up) {
+        if (v > vals[ext]) ext = i;
+        else if (vals[ext] - v >= thr) { pivots.push(ext); up = false; ext = i; }
+      } else {
+        if (v < vals[ext]) ext = i;
+        else if (v - vals[ext] >= thr) { pivots.push(ext); up = true; ext = i; }
+      }
+    });
+    if (pivots === null) return [];
+    pivots.push(ext);
+    return pivots.slice(1).map((b, i) => [pivots[i], b]);
+  }
+
+  // Every position the wallet has held: share count and cash over time, and a price for any moment.
+  async function makeBook(now, progress) {
+    const act = await pages(`${DATA}/activity?user=${cfg.wallet}&limit=500`);
+    const events = new Map(), meta = new Map();
+    for (const a of act.slice().sort((x, y) => x.timestamp - y.timestamp)) {
+      const tok = a.token_id;
+      if (!tok) continue;
+      let ev;
+      if (a.type === 'TRADE') {  // price x size, not usdc_size: trade P/L is before fees
+        const s = a.side === 'BUY' ? 1 : -1;
+        ev = [a.timestamp, s * a.size, -s * a.price * a.size, 'trade'];
+      } else if (a.type === 'REDEEM') ev = [a.timestamp, -a.size, a.usdc_size, 'redeem'];
+      else continue;
+      if (!events.has(tok)) events.set(tok, []);
+      events.get(tok).push(ev);
+      if (!meta.has(tok)) meta.set(tok, a);
+    }
+    const held = (tok, t0, t1) => {
+      let h = 0;
+      for (const [ts, dh] of events.get(tok)) {
+        if (ts > t1) break;
+        if (ts >= t0 && (h > 1e-6 || dh > 0)) return true;
+        h += dh;
+      }
+      return h > 1e-6;
+    };
+    const prices = new Map(), toks = [...events.keys()];
+    async function history(tok) {  // half-hourly over the last month, 12-hourly before that
+      const qs = [], pts = new Map();
+      if (events.get(tok)[0][0] < now - 29 * DAY) qs.push('interval=max');
+      if (held(tok, now - 31 * DAY, now)) qs.push('interval=1m&bucket_seconds=1800');
+      for (const q of qs) {
+        try {
+          for (const x of await pages(`${DATA}/prices-history?token_id=${tok}&${q}`)) pts.set(x.timestamp, x.price);
+        } catch (e) {
+          console.warn(`pnl: no price history for ${meta.get(tok).title} (${q}): ${e.message}`);
+        }
+      }
+      prices.set(tok, [...pts].sort((a, b) => a[0] - b[0]));
+    }
+    let next = 0, done = 0;
+    progress(0, toks.length);
+    await Promise.all([0, 1, 2].map(async () => {  // more in parallel and the Data API answers 503
+      while (next < toks.length) { await history(toks[next++]); progress(++done, toks.length); }
+    }));
+    const price = (tok, t) => {  // the bucket that starts at or before t
+      const p = prices.get(tok);
+      if (!p || !p.length) return null;
+      let lo = 0, hi = p.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (p[mid][0] <= t) lo = mid + 1; else hi = mid; }
+      return p[Math.max(lo - 1, 0)][1];
+    };
+    const state = (tok, t) => {
+      let h = 0, c = 0;
+      for (const [ts, dh, dc] of events.get(tok)) { if (ts > t) break; h += dh; c += dc; }
+      const p = price(tok, t);
+      return [h, p, c + (Math.abs(h) > 1e-6 && p != null ? h * p : 0)];
+    };
+    return function drivers(t0, t1) {  // positions ranked by how much their P/L changed between t0 and t1
+      const out = [];
+      for (const [tok, evs] of events) {
+        let [h0, p0, v0] = state(tok, t0), [h1, p1, v1] = state(tok, t1);
+        if (Math.abs(v1 - v0) < 0.005) continue;
+        const a = meta.get(tok);
+        p0 = h0 > 1e-6 ? p0 : null; p1 = h1 > 1e-6 ? p1 : null;
+        let move;
+        if (evs.some(([ts, , , kind]) => kind === 'redeem' && t0 < ts && ts <= t1)) move = p0 != null ? `${cents(p0)} → redeemed` : 'bought and redeemed';
+        else if (p0 == null) move = p1 != null ? `new, now ${cents(p1)}` : 'bought and sold';
+        else move = `${cents(p0)} → ${p1 != null ? cents(p1) : 'sold'}`;
+        out.push({ d: v1 - v0, title: a.title, side: a.outcome, move, short: cfg.labels[question(a.title).toLowerCase()] || ruleName(a.title),
+                   url: a.event_slug ? `https://polymarket.com/event/${a.event_slug}` : '' });
+      }
+      return out.sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+    };
+  }
+
+  async function build(progress) {
+    const now = Math.floor(Date.now() / 1000);
+    const [res, drivers] = await Promise.all([
+      get(`${DATA}/user-pnl?user=${cfg.wallet}&interval=all&fidelity=1h`),
+      makeBook(now, progress).catch(e => { console.warn(`pnl: swings left unexplained (${e.message})`); return null; }),
+    ]);
+    const points = res.data.points.filter(x => x.trade_pnl != null);
+    const firstT = points[0].timestamp, lastT = points[points.length - 1].timestamp, lastV = points[points.length - 1].trade_pnl;
+    const snaps = [];  // the hours on which the API recorded a new value
+    let block = {};
+    for (const x of points) if (x.source_block !== block) { snaps.push([x.timestamp, x.trade_pnl]); block = x.source_block; }
+    const jan1 = Date.UTC(parts(now).y, 0, 1) / 1000 - HOUR;  // midnight in Copenhagen, which is on CET in January
+    const out = cfg.periods.map(([key, label, span]) => {
+      let start = key === 'YTD' ? jan1 : span == null ? firstT : lastT - span + HOUR, base;
+      if (start <= firstT) { start = firstT; base = 0; }  // the wallet is younger than the window: measured from zero
+      else { const x = points.find(x => x.timestamp >= start); start = x.timestamp; base = x.trade_pnl; }
+      const opening = snaps.filter(s => s[0] <= start).pop();
+      const series = [[start, opening[1], opening[0]], ...snaps.filter(([t]) => t > start).map(([t, v]) => [t, v, t])];
+      let notes = swings(series.map(s => s[1]), cfg.swing).map(([a, b]) => {
+        const d = series[b][1] - series[a][1];
+        let step = a + 1;  // pinned on the step that carries the swing past its halfway mark
+        while (step < b && Math.abs(series[step][1] - series[a][1]) < Math.abs(d) / 2) step++;
+        const note = { t0: series[a][0], t1: series[b][0], d, drivers: [], rest: null,
+                       at: series[step][0] - HOUR / 2, v: (series[step][1] + series[step - 1][1]) / 2 - base };
+        if (drivers) {
+          const ranked = drivers(series[a][2], series[b][2]), rebuilt = ranked.reduce((s, r) => s + r.d, 0);
+          note.drivers = ranked.filter(r => r.d * d > 0 && Math.abs(r.d) >= cfg.driverMin * Math.abs(d)).slice(0, cfg.maxDrivers);
+          if (Math.abs(rebuilt - d) <= 0.35 * Math.abs(d)) note.rest = d - note.drivers.reduce((s, r) => s + r.d, 0);
+        }
+        return note;
+      });
+      notes = notes.sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, cfg.maxNotes).sort((x, y) => x.t0 - y.t0);
+      const line = [];  // plateau-and-ramp: each recorded value is held until the hour before the next one
+      series.forEach(([t, v], i) => {
+        const nxt = i + 1 < series.length ? series[i + 1][0] : lastT + HOUR;
+        line.push([t, v - base]);
+        if (nxt - HOUR > t) line.push([nxt - HOUR, v - base]);
+      });
+      return { key, label, t0: start, t1: lastT, change: lastV - base, line, notes };
+    });
+    return { periods: out, explained: !!drivers };
+  }
+
+  const btn = root.querySelector('.pnl-refresh');
+  if (btn) {
+    const lbl = btn.querySelector('.lbl'), when = btn.querySelector('.when'), help = btn.title;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true; btn.classList.add('busy'); btn.classList.remove('err');
+      lbl.textContent = 'Refreshing…'; when.textContent = '';
+      try {
+        const { periods: fresh, explained } = await build((n, of) => { lbl.textContent = `Refreshing… ${n}/${of}`; });
+        load(fresh);
+        render();
+        const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit' });
+        when.textContent = t;
+        btn.title = `Refreshed from Polymarket at ${t}` + (explained ? '.' : ', but the positions behind the swings could not be rebuilt.')
+          + ' ' + help;
+        lbl.textContent = 'Refresh';
+      } catch (e) {
+        btn.classList.add('err'); lbl.textContent = 'Retry';
+        btn.title = `Couldn't refresh: ${e.message}`;
+      } finally {
+        btn.disabled = false; btn.classList.remove('busy');
+      }
+    });
+  }
+
   let width = 0;
   new ResizeObserver(() => { if (plot.clientWidth !== width) { width = plot.clientWidth; render(); } }).observe(plot);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);  // callouts are measured in the page's fonts
@@ -638,10 +881,21 @@ JS = r"""
 
 def section(get, pages, wallet, now):
     """The Profit/Loss card: period tabs, the annotated chart and the list of swings under it."""
-    return render(build(get, pages, wallet, now))
+    return render(build(get, pages, wallet, now), wallet)
 
 
-def render(periods):
+def refresh_config(wallet):
+    """What the card's Refresh button needs to redo build() in the browser: the same constants, rules and names."""
+    return dict(wallet=wallet, periods=PERIODS, swing=SWING, maxNotes=MAX_NOTES, maxDrivers=MAX_DRIVERS,
+                driverMin=DRIVER_MIN, nameMax=NAME_MAX, dangling=sorted(DANGLING), deadline=DEADLINE.pattern,
+                tighter=TIGHTER, preposition=PREPOSITION.pattern, labels=load_labels())
+
+
+def as_json(x):
+    return json.dumps(x, separators=(",", ":")).replace("<", chr(92) + "u003c")
+
+
+def render(periods, wallet):
     whole = periods[-1]
     data = []
     for p in periods:
@@ -665,12 +919,16 @@ def render(periods):
         print(f'  pnl: callout "{short}" was made by rule; add a name for "{question(title)}" to labels.json to change it')
     tabs = ''.join(f'<button type="button" role="tab" data-k="{p["key"]}" aria-selected="{"true" if p["key"] == "1D" else "false"}">'
                    f'{p["key"]}</button>' for p in periods)
+    refresh = ('<button type="button" class="pnl-refresh" title="Fetch the P/L line, trades and prices from Polymarket '
+               'and redraw this chart and its swings. The rest of the page stays as built.">'
+               '<span aria-hidden="true">↻</span><span class="lbl">Refresh</span><span class="when"></span></button>')
     return (f'<section class="pnl" id="pnl" aria-label="Profit and loss">'
             f'<div class="pnl-head"><div><h2>Profit/Loss</h2><span class="pnl-v"></span><span class="pnl-k"></span></div>'
-            f'<div class="pnl-tabs" role="tablist" aria-label="Period">{tabs}</div></div>'
+            f'<div class="pnl-ctl">{refresh}<div class="pnl-tabs" role="tablist" aria-label="Period">{tabs}</div></div></div>'
             '<div class="pnl-plot"><svg role="img"></svg><div class="pnl-tip" hidden></div></div>'
             '<ol class="pnl-notes"></ol>'
-            f'<script type="application/json" id="pnl-data">{json.dumps(data, separators=(",", ":")).replace("<", chr(92) + "u003c")}</script>'
+            f'<script type="application/json" id="pnl-data">{as_json(data)}</script>'
+            f'<script type="application/json" id="pnl-cfg">{as_json(refresh_config(wallet))}</script>'
             f'<style>{CSS}</style><script>{JS}</script></section>')
 
 
