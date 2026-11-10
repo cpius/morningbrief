@@ -116,13 +116,13 @@
  {
   "id": "5211896",
   "at": "2026-11-04T20:30",
-  "fair": 0.70,
+  "fair": 0.7,
   "why": "Post-election 4 Nov: ~30% YES (range 22-38) vs market 36%. Dems took both chambers (+25 House, +7 Senate); Vance: 'The reason we lost is the war'. CBS (multiple sources): Trump asking advisers if Hegseth should stay; NBC: DeSantis floated, confirmable in the GOP lame-duck Senate, which pulls any swap into Nov/early Dec. Massie's vote is the week of Nov 9. Against: Trump same day 'doing a very good job', WH 'full confidence' (spike 0.30->0.60->0.33); Cooper/Caine offered as scapegoats. Smart money split. Edge thin: rest a bid at 0.62-0.63, small."
  },
  {
   "id": "1811265",
   "at": "2026-11-04T20:30",
-  "fair": 0.60,
+  "fair": 0.6,
   "why": "Post-election 4 Nov: ~40% YES vs market 44.5%. Same news as the Nov 30 rung; December adds ~14% (Senate-seat exit: Trump says Hegseth 'would be very popular' in Blackburn's seat, but it opens only mid-January; a lame-duck confirmation needs a nominee by early Dec). Edge ~5%, below the uncertainty."
  },
  {
@@ -208,6 +208,18 @@
   "at": "2026-11-05T18:00",
   "fair": 0.94,
   "why": "Post-election 5 Nov: still needs a state LAW (or approved ballot measure) pausing all new data centers ≥100 MW by default; executive orders don't count, nor does a pause that lasts until an agency finishes its own proceedings. Louisiana: Landry 'We don't need a moratorium' and can run for a second term in Oct 2027; no initiative; Meta Hyperion under construction. +1 point for national contagion. ~6% YES."
+ },
+ {
+  "id": "6401312",
+  "at": "2026-11-09T22:00",
+  "fair": 0.68,
+  "why": "Deep dive 9 Nov: all five flew their own Tel Aviv flights today (airport board). YES needs 3 of 5 out 14+ days at once. That followed 6 of 7 shocks since Oct 2023, each with missiles aimed at Israel or a credible threat of them; limited US strikes on Iran (Sep, 2 and 6 Nov) moved none. Iran last fired at Israel on 7 June. ~34% chance of Iran–Israel fire by 31 Jan × 0.85 + 3 points = ~32% YES vs market 36.5%. The risk sits in late Nov–Dec, when a third US carrier group arrives."
+ },
+ {
+  "id": "3748222",
+  "at": "2026-11-09T22:40",
+  "fair": 0.69,
+  "why": "Deep dive 9 Nov (second pass): fair YES up from 25% to ~31%. On 6 Nov Siegmund dropped \"one ballot only\" and may stand in ballots 2–3, which reopens a third ballot before New Year (35% it is held in December, 65% it elects him). But no outside votes are promised for 15 Dec (42 in ballots 1–2: 13%), the CDU still walks out, the BSW abstains, and the Landtag is in recess 21–31 Dec. Watch the 5 Dec CDU convention and whether ballot 2 and the dissolution vote are put on the 15–17 Dec agenda."
  },
  {
   "id": "5730984",
