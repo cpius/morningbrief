@@ -13,6 +13,8 @@ HOUR, DAY = 3600, 86400
 PERIODS = [('1D', 'Past day', DAY), ('1W', 'Past week', 7 * DAY), ('1M', 'Past month', 30 * DAY),
            ('1Y', 'Past year', 365 * DAY), ('YTD', 'Year to date', None), ('ALL', 'All time', None)]
 SWING = 0.08      # a swing is a run that reverses by less than this share of the period's range
+QUIET = 0.04      # ... and it splits where the line holds flat for this share of the period (an hour at least)
+MOVE_MIN = 0.04   # a swing smaller than this share of the period's range gets no note
 MAX_NOTES = 5     # swings labelled per period
 MAX_DRIVERS = 3   # positions named per swing
 DRIVER_MIN = 0.05  # ... each at least this share of the swing
@@ -122,6 +124,21 @@ def swings(vals, share=SWING):
         return []
     pivots.append(ext)
     return list(zip(pivots, pivots[1:]))
+
+
+def moves(times, legs, span, share=QUIET):
+    """Each zigzag leg split where the drawn line holds flat for a while, so a day that climbs in steps gets a note
+    per step. The line holds each recorded value until the hour before the next one."""
+    gap = max(HOUR, span * share)
+    out = []
+    for a, b in legs:
+        s = a
+        for i in range(a + 1, b):
+            if times[i + 1] - HOUR - times[i] >= gap:
+                out.append((s, i))
+                s = i
+        out.append((s, b))
+    return out
 
 
 class Book:
@@ -251,8 +268,11 @@ def build(get, pages, wallet, now):
         opening = [s for s in snaps if s[0] <= start][-1]
         series = [(start, opening[1], opening[0])] + [(t, v, t) for t, v in snaps if t > start]
         notes = []
-        for a, b in swings([v for _, v, _ in series]):
+        vals = [v for _, v, _ in series]
+        for a, b in moves([t for t, _, _ in series], swings(vals), last_t - start):
             d = series[b][1] - series[a][1]
+            if abs(d) < MOVE_MIN * (max(vals) - min(vals)):
+                continue
             # pinned on the step that carries the swing past its halfway mark
             step = next(i for i in range(a + 1, b + 1) if abs(series[i][1] - series[a][1]) >= abs(d) / 2)
             note = dict(t0=series[a][0], t1=series[b][0], d=d, drivers=[], rest=None, rebuilt=None,
@@ -728,6 +748,15 @@ JS = r"""
     pivots.push(ext);
     return pivots.slice(1).map((b, i) => [pivots[i], b]);
   }
+  function moves(times, legs, span, share) {  // each leg split where the drawn line holds flat for a while
+    const gap = Math.max(HOUR, span * share), out = [];
+    for (const [a, b] of legs) {
+      let s = a;
+      for (let i = a + 1; i < b; i++) if (times[i + 1] - HOUR - times[i] >= gap) { out.push([s, i]); s = i; }
+      out.push([s, b]);
+    }
+    return out;
+  }
 
   // Every position the wallet has held: share count and cash over time, and a price for any moment.
   async function makeBook(now, progress) {
@@ -823,8 +852,10 @@ JS = r"""
       else { const x = points.find(x => x.timestamp >= start); start = x.timestamp; base = x.trade_pnl; }
       const opening = snaps.filter(s => s[0] <= start).pop();
       const series = [[start, opening[1], opening[0]], ...snaps.filter(([t]) => t > start).map(([t, v]) => [t, v, t])];
-      let notes = swings(series.map(s => s[1]), cfg.swing).map(([a, b]) => {
+      const vals = series.map(s => s[1]), floor = cfg.moveMin * (Math.max(...vals) - Math.min(...vals));
+      let notes = moves(series.map(s => s[0]), swings(vals, cfg.swing), lastT - start, cfg.quiet).flatMap(([a, b]) => {
         const d = series[b][1] - series[a][1];
+        if (Math.abs(d) < floor) return [];
         let step = a + 1;  // pinned on the step that carries the swing past its halfway mark
         while (step < b && Math.abs(series[step][1] - series[a][1]) < Math.abs(d) / 2) step++;
         const note = { t0: series[a][0], t1: series[b][0], d, drivers: [], rest: null,
@@ -834,7 +865,7 @@ JS = r"""
           note.drivers = ranked.filter(r => r.d * d > 0 && Math.abs(r.d) >= cfg.driverMin * Math.abs(d)).slice(0, cfg.maxDrivers);
           if (Math.abs(rebuilt - d) <= 0.35 * Math.abs(d)) note.rest = d - note.drivers.reduce((s, r) => s + r.d, 0);
         }
-        return note;
+        return [note];
       });
       notes = notes.sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, cfg.maxNotes).sort((x, y) => x.t0 - y.t0);
       const line = [];  // plateau-and-ramp: each recorded value is held until the hour before the next one
@@ -886,7 +917,7 @@ def section(get, pages, wallet, now):
 
 def refresh_config(wallet):
     """What the card's Refresh button needs to redo build() in the browser: the same constants, rules and names."""
-    return dict(wallet=wallet, periods=PERIODS, swing=SWING, maxNotes=MAX_NOTES, maxDrivers=MAX_DRIVERS,
+    return dict(wallet=wallet, periods=PERIODS, swing=SWING, quiet=QUIET, moveMin=MOVE_MIN, maxNotes=MAX_NOTES, maxDrivers=MAX_DRIVERS,
                 driverMin=DRIVER_MIN, nameMax=NAME_MAX, dangling=sorted(DANGLING), deadline=DEADLINE.pattern,
                 tighter=TIGHTER, preposition=PREPOSITION.pattern, labels=load_labels())
 

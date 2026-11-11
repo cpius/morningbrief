@@ -9,7 +9,8 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   the page also gets a short "Mispricing hunt" section linking to `/hunt/`.
 - `pnl.py` builds the Profit/Loss card under the summary: the line polymarket.com plots (`trade_pnl` from
   `/v2/user-pnl`) for 1D, 1W, 1M, 1Y, YTD and ALL, with each period's largest swings numbered on the chart and
-  listed below with the positions that drove them. Those are rebuilt from the wallet's fills and `/v2/prices-history`,
+  listed below with the positions that drove them. A swing ends where the line reverses (`SWING`) or holds flat for a
+  while (`QUIET`), so a day that climbs in steps gets a note per step. The drivers are rebuilt from the wallet's fills and `/v2/prices-history`,
   the marks the P/L snapshots use. `python3 pnl.py` prints the swings; if the API fails, the brief builds without the card.
   The card's Refresh button redoes `build()` in the browser (a JavaScript copy in `pnl.py`'s `JS`, fed the same
   constants, rules and labels through `#pnl-cfg`), so a change to the Python build needs the same change there.
