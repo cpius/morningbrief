@@ -643,7 +643,8 @@ def cmd_add(a):
         print(f"warning: {weak(x)} is under the bar ({MIN_ANN * 100:.0f}% a year and +{MIN_EDGE * 100:.0f}% to resolution), "
               "so build will drop it again")
     elif x and x['ann'] < MAIN_ANN:
-        print(f"note: under {MAIN_ANN * 100:.0f}% a year, so it goes to the appendix, not the main list")
+        print(f"note: under {MAIN_ANN * 100:.0f}% a year: it opens the main list today as a new pick, "
+              "then moves to the appendix")
 
 
 def cmd_note(a):
@@ -979,7 +980,7 @@ def row_html(i, p, e):
 def table_html(rows):
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Market</th><th>Ask</th><th>Fair</th>'
             '<th title="Fair ÷ ask − 1 held to resolution, plus the holding reward">Return</th>'
-            '<th title="Return ÷ years to resolution; the list is ranked by it">Per yr ▾</th>'
+            '<th title="Return ÷ years to resolution; the list is ranked by it, after today\'s new picks">Per yr ▾</th>'
             '<th title="Share of smart-money dollars on our side">Smart $</th><th>Depth</th><th>Ends</th></tr></thead>')
     body = '\n'.join(row_html(i, p, e) for i, (p, e) in enumerate(rows, 1))
     return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
@@ -1040,6 +1041,12 @@ def held_table_html(held):
 def render(st, main, extra, noask, held):
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
+    n_fast, n_slow = len(main), len(extra)  # by rate, for the summary stats
+    # today's new picks open the main list whatever their rate, slower ones included; the rest follow by Per yr
+    is_new = lambda p: p.get('added') == str(TODAY)
+    fresh = [r for r in rows if is_new(r[0])]
+    main = fresh + [r for r in main if not is_new(r[0])]
+    extra = [r for r in extra if not is_new(r[0])]
     boxes = []
     if st['notes']:
         boxes.append('<div class="box warn" id="changes"><h3>What changed</h3><ul>' +
@@ -1095,6 +1102,10 @@ def render(st, main, extra, noask, held):
                      'Sorted by Per yr, lowest first.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
+    rest = len(main) - len(fresh)
+    main_h2 = (f'Main list: today\'s {len(fresh)} new pick{"s" * (len(fresh) != 1)} first, then {rest} returning at least '
+               f'{MAIN_ANN * 100:.0f}% a year' if fresh else
+               f'Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year')
     extra_html = (f'<section id="slower"><h2>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h2>{table_html(extra)}</section>'
                   if extra else '')
     new = [p for p, _ in rows if p.get('added') == str(TODAY)]
@@ -1305,8 +1316,8 @@ footer p {{ margin: 0; }}
     <div class="stamp"><span id="asks-at">Asks at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
   </header>
   <section class="summary" aria-label="Summary">
-    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{len(main)}</a></span><span class="s"><a href="#main">main list</a></span></div>
-    <div class="stat"><span class="k">Slower picks</span><span class="v">{jump(len(extra), len(extra), "#slower")}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
+    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{n_fast}</a></span><span class="s"><a href="#main">main list</a></span></div>
+    <div class="stat"><span class="k">Slower picks</span><span class="v">{jump(n_slow, n_slow, "#slower" if extra else "#main")}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
     <div class="stat goldk"><span class="k">Earn 3.25% APR</span><span class="v">{n_hold}</span><span class="s">gold badge</span></div>
     <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
     <div class="stat"><span class="k">Changes today</span>{changes}</div>
@@ -1314,7 +1325,7 @@ footer p {{ margin: 0; }}
   {tabs_html}
   {boxes_html}
   {held_html}
-  <section id="main"><h2>Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year</h2>{main_html}</section>
+  <section id="main"><h2>{main_h2}</h2>{main_html}</section>
   {extra_html}
   {noask_html}
   {dropped}
@@ -1324,7 +1335,7 @@ footer p {{ margin: 0; }}
     prices; "was" then shows the ask when the page was built. It does no research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
     a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
-    ranked by it. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
+    ranked by it, except that today's new picks open the main list whatever their rate, slower ones included. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
     don't blow the rate up. A pick leaves the book below {MIN_ANN * 100:.0f}% a year or below
     +{MIN_EDGE * 100:.0f}% to resolution, which is inside a fair value's own error.
     <b>Depth</b> is the dollars on offer at or within 2¢ of the ask.</p>
