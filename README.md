@@ -67,7 +67,8 @@ value and a one-line reason. Every morning it is repriced against the live order
 Return is fair ÷ ask − 1 held to resolution, plus Polymarket's 3.25% APR holding reward on markets that pay it
 (Gamma flag `holdingRewardsEnabled`; those rows get a gold badge). The book is ranked by that return as a yearly rate,
 return × 365 / days (simple, with days counted as at least 14), so a small edge that resolves in weeks beats a big one
-that takes years. The main list is 30% a year and up, the appendix 10–30%.
+that takes years. The main list is 30% a year and up, the appendix 10–30%. Picks added today open the main list
+whatever their rate (slower ones included, sorted by rate among themselves) and fall into place the next day.
 
     python3 hunt/hunt.py pull     # book from the live site's /hunt/state.json, else hunt/seed.json
     python3 hunt/hunt.py scan     # reprice, sweep ~64 tags; prints RESOLVED/REVIEW lines, writes hunt/work/candidates.txt
