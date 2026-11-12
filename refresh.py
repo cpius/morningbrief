@@ -225,7 +225,8 @@ d24_all = tot_d24 + closed_d24
 redeem_value = sum(r['value'] for r in resolved)
 
 HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build ...
-HUNT_SECTION = os.path.join(HERE, 'hunt', 'work', 'section.html')  # ... with the page's Mispricing hunt section
+HUNT_SECTION = os.path.join(HERE, 'hunt', 'work', 'section.html')  # ... with the page's Mispricing hunt section ...
+HUNT_NAV = os.path.join(HERE, 'hunt', 'work', 'nav.json')  # ... and its tabs and Refresh prices button for the top menu
 
 
 def load_hunt():
@@ -421,7 +422,7 @@ def weather_section():
     except Exception as e:  # the portfolio must still build when the forecast is down, but say why it is missing
         msg = fetch_failure(e)
         print(f"  weather: skipped ({msg})")
-        return ('<section class="weather"><h2>Weather</h2>'
+        return ('<section class="weather" id="weather"><h2>Weather</h2>'
                 f'<p class="wx-today"><span class="chip-warn">No forecast today</span> {html.escape(msg)}</p>'
                 '</section>')
     day = (f"{WMO.get(today['weather_code'][0], 'mixed')}, "
@@ -454,7 +455,7 @@ def weather_section():
                  f'<tbody>{"".join(rows)}</tbody></table></div>')
     else:
         table = '<p class="wx-note">Saturn is outside the east balcony window this week.</p>'
-    return ('<section class="weather"><h2>Weather</h2>'
+    return ('<section class="weather" id="weather"><h2>Weather</h2>'
             f'<p class="wx-today"><b>Copenhagen today:</b> {html.escape(day)}</p>'
             f'<h3>Saturn nights from the east balcony</h3>{table}'
             '<p class="wx-note">Cloud is each model\'s average low and mid cloud over the hours Saturn is above ~25° '
@@ -479,6 +480,33 @@ def hunt_section():
     print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped; "
           f"{h.get('held', 0)} positions, {len(h.get('held_above') or [])} with the bid above fair")
     return section
+
+
+def hunt_nav():
+    """The hunt's tabs and Refresh prices button for the top menu (hunt/hunt.py build writes them with the section)."""
+    if not hunt_html:
+        return [], ''
+    try:
+        with open(HUNT_NAV) as fh:
+            n = json.load(fh)
+    except (OSError, ValueError):
+        print('  hunt: no hunt/work/nav.json, the menu gets one Hunt tab')
+        return [('Hunt', 'hunt', None)], ''
+    return [tuple(t) for t in n['tabs']], n['button']
+
+
+def top_menu():
+    """The menu at the top of the page: a tab per section, the hunt's parts among them, in page order. It sticks to the
+    top of the window while the page scrolls, and NAV_JS lights the tab of the section being read."""
+    tabs, button = hunt_nav()
+    groups = [[('Summary', 'summary', None)] + ([('Profit/Loss', 'pnl', None)] if pnl_html else []) +
+              [('Positions', 'positions', len(open_rows))],
+              tabs,
+              [('Weather', 'weather', None)] + ([('Closed', 'closed', len(closed))] if closed else [])]
+    tab = lambda label, to, n: f'<a href="#{to}">{html.escape(label)}{f"<span>{n}</span>" if n is not None else ""}</a>'
+    sep = '<span class="sep" aria-hidden="true"></span>'
+    return (f'<nav class="topnav" aria-label="Sections"><div class="tabs">'
+            f'{sep.join("".join(tab(*t) for t in g) for g in groups if g)}</div>{button}</nav>')
 
 
 def recent_trades():
@@ -528,10 +556,11 @@ pnl_html = pnl_section()
 print_trades(recent_trades())
 weather_html = weather_section()
 hunt_html = hunt_section()
+menu_html = top_menu()
 
 lower = []
 if closed:
-    lower.append(f'<section><h2>Closed in the last 24h</h2><ul>{"".join(closed_item(r) for r in closed)}</ul></section>')
+    lower.append(f'<section id="closed"><h2>Closed in the last 24h</h2><ul>{"".join(closed_item(r) for r in closed)}</ul></section>')
 
 value_sub = f"{len(open_rows)} open positions"
 if redeem_value > 0.005:
@@ -567,6 +596,40 @@ HOVER_JS = r"""<div id="spark-tip" hidden></div>
     svg.addEventListener('pointerleave', () => { svg.classList.remove('on'); tip.hidden = true; });
   });
   addEventListener('scroll', () => { tip.hidden = true; document.querySelectorAll('svg.spark.on').forEach(s => s.classList.remove('on')); }, { passive: true });
+})();
+</script>"""
+
+
+# The top menu's tabs: light the one of the section being read. A clicked tab stays lit until the reader scrolls themselves.
+NAV_JS = r"""<script>
+(() => {
+  const bar = document.querySelector('.topnav'), nav = bar && bar.querySelector('.tabs');
+  if (!nav) return;
+  const links = [...nav.querySelectorAll('a')];
+  const targets = links.map(a => document.getElementById(a.hash.slice(1)));
+  let pinned = null, queued = false;
+  const light = i => {
+    links.forEach((a, j) => j === i ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'));
+    const a = links[i], l = a.offsetLeft, r = l + a.offsetWidth;  // keep the lit tab in view when the tabs scroll sideways
+    if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = l - 8;
+  };
+  const update = () => {
+    queued = false;
+    if (pinned !== null) return light(pinned);
+    const line = bar.getBoundingClientRect().bottom + 32;
+    let i = 0;
+    targets.forEach((t, j) => { if (t && t.getBoundingClientRect().top <= line) i = j; });
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 2)  // at the bottom: short last sections never reach the line
+      targets.forEach((t, j) => { if (t && t.getBoundingClientRect().top < innerHeight - 48) i = Math.max(i, j); });
+    if (bar.getBoundingClientRect().top > 1) i = 0;  // the menu hasn't stuck yet: still at the top
+    light(i);
+  };
+  links.forEach((a, j) => a.addEventListener('click', () => { pinned = j; light(j); }));
+  ['wheel', 'touchstart', 'keydown'].forEach(ev => addEventListener(ev, () => { pinned = null; }, { passive: true }));
+  addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(update); } }, { passive: true });
+  const hashed = links.findIndex(a => a.hash === location.hash);
+  if (hashed >= 0) pinned = hashed;
+  update();
 })();
 </script>"""
 
@@ -609,8 +672,7 @@ page = f'''<title>Nothing Ever Happens Book</title>
 * {{ box-sizing: border-box; }}
 body {{ background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }}
 .wrap {{ max-width: 1360px; margin: 0 auto; padding: 40px 28px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }}
-/* the brief keeps its 1124px column; only the hunt section (#hunt) runs wider, for its tables */
-.wrap > :not(#hunt) {{ width: 100%; max-width: 1124px; justify-self: center; }}
+@media (prefers-reduced-motion: no-preference) {{ html {{ scroll-behavior: smooth; }} }}
 a {{ color: inherit; text-decoration: none; }}
 a:hover {{ color: var(--accent); }}
 a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }}
@@ -619,6 +681,32 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 header {{ display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px 32px; }}
 h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 42px); line-height: 1.05; letter-spacing: -.02em; margin: 0; text-wrap: balance; }}
 .stamp {{ font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; line-height: 1.6; }}
+
+.topnav {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: stretch; gap: 10px; margin: 0 -28px; padding: 0 16px; min-width: 0;
+           background: var(--ground); box-shadow: inset 0 -1px var(--rule); }}
+.topnav .tabs {{ flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }}
+.topnav .tabs::-webkit-scrollbar {{ display: none; }}
+.topnav .tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 10px 10px;
+                   font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
+.topnav .tabs a:hover {{ color: var(--ink); }}
+.topnav .tabs a[aria-current] {{ color: var(--ink); border-bottom-color: var(--accent); }}
+.topnav .tabs a span {{ font-family: var(--mono); font-size: 11.5px; font-weight: 500; padding: 0 6px; border-radius: 999px;
+                        background: var(--surface-2); color: var(--muted); }}
+.topnav .tabs a[aria-current] span {{ background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }}
+.topnav .sep {{ flex: none; width: 1px; margin: 12px 8px; background: var(--rule); }}
+#summary, #pnl, #positions, #weather, #closed {{ scroll-margin-top: 64px; }}
+/* the hunt's Refresh prices button (hunt/hunt.py's REFRESH_JS runs it), styled here so it is ready at first paint */
+#hunt-refresh {{ flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+                 font: 600 13px var(--body); color: var(--accent); background: var(--surface); cursor: pointer;
+                 border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; }}
+#hunt-refresh:hover {{ background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }}
+#hunt-refresh:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+#hunt-refresh:disabled {{ cursor: progress; opacity: .7; }}
+#hunt-refresh .when {{ font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--muted); }}
+#hunt-refresh .when:empty {{ display: none; }}
+#hunt-refresh.busy span[aria-hidden] {{ animation: hunt-spin 1s linear infinite; }}
+#hunt-refresh.err {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }}
+@media (prefers-reduced-motion: reduce) {{ #hunt-refresh.busy span[aria-hidden] {{ animation: none; }} }}
 
 .summary {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
 .stat {{ padding: 16px 20px 18px 0; display: grid; gap: 4px; align-content: start; }}
@@ -706,6 +794,14 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
   .stat.hot {{ padding-left: 14px; grid-column: 1 / -1; order: -1; }}
   .stamp {{ text-align: left; }}
 }}
+@media (max-width: 720px) {{
+  .topnav {{ padding: 0 4px; gap: 4px; }}
+  #hunt-refresh {{ padding: 5px 10px; margin-right: 8px; }}
+  #hunt-refresh .lbl {{ display: none; }}
+}}
+@media print {{
+  .topnav {{ display: none; }}
+}}
 </style>
 
 <div class="wrap">
@@ -717,7 +813,9 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
     <div class="stamp">{fmt_date(SNAP)}, {SNAP:%H:%M}</div>
   </header>
 
-  <section class="summary" aria-label="Portfolio summary">
+  {menu_html}
+
+  <section class="summary" id="summary" aria-label="Portfolio summary">
     <div class="stat"><span class="k">Value</span><span class="v">{usd(tot_value)}</span><span class="s">{value_sub}</span></div>
     <div class="stat"><span class="k">Traded</span><span class="v">{usd(tot_cost)}</span><span class="s">cost basis</span></div>
     <div class="stat"><span class="k">Unrealized P&amp;L</span><span class="v {tone(tot_pnl)}">{usd(tot_pnl, True)}</span><span class="s">{tot_pnl/tot_cost*100:+.2f}% on cost</span></div>
@@ -727,7 +825,7 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
 
   {pnl_html}
 
-  <div class="table-box">
+  <div class="table-box" id="positions">
     <table>
       <thead><tr><th>Market</th><th>Avg → Now</th><th style="text-align:left">24h chart</th><th class="d24h">Last 24h</th></tr></thead>
       <tbody>{''.join(trs)}</tbody>
@@ -747,6 +845,7 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
   <!--LOG-->
 </div>
 {HOVER_JS}
+{NAV_JS}
 '''
 
 with open(OUT, 'w') as fh:
