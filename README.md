@@ -5,8 +5,10 @@ plus a Copenhagen weather line, a Saturn observing forecast for the east balcony
 Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book`, team `oxean-x`).
 
 - `python3 refresh.py` fetches Polymarket positions/activity/prices and Open-Meteo forecasts, then writes
-  `portfolio.html` and `site/index.html`. It uses only the standard library. If `hunt/hunt.py build` ran today,
-  the page also gets a short "Mispricing hunt" section linking to `/hunt/`.
+  `portfolio.html` and `site/index.html`. It uses only the standard library. The page is the summary, the
+  Profit/Loss card, the positions table, the Mispricing hunt (if `hunt/hunt.py build` ran today, its section from
+  `hunt/work/section.html`), the weather and positions closed in the last 24h, with a link to the run log at the foot.
+  Trades and the biggest movers are printed (`trade:` and `mover:` lines) for the routine's summary, not shown.
 - `pnl.py` builds the Profit/Loss card under the summary: the line polymarket.com plots (`trade_pnl` from
   `/v2/user-pnl`) for 1D, 1W, 1M, 1Y, YTD and ALL, with each period's largest swings numbered on the chart and
   listed below with the positions that drove them. A swing ends where the line reverses (`SWING`) or holds flat for a
@@ -29,7 +31,7 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
 
 ## Run log (`runlog.py`, `/log/`)
 
-Each routine run is logged and published at https://morningbrief.dorup.dk/log/ (linked from the brief's stamp).
+Each routine run is logged and published at https://morningbrief.dorup.dk/log/ (linked at the foot of the brief).
 For every stage it records who ran it (a script, the main agent or research subagents), the model and effort level,
 start time, time spent, exit code, counts and notes, plus the start and end of a script's output. For every subagent
 it records model, effort, time, tokens, tool uses, web searches and the markets it wrote. The account's weekly and
@@ -64,7 +66,9 @@ the weekly plan was left at each point and what each stage used.
 ## Mispricing hunt (`hunt/`)
 
 A book of Polymarket picks, mostly "nothing ever happens" NO bets on politics and geopolitics, each with a fair
-value and a one-line reason. Every morning it is repriced against the live order books and published at `/hunt/`.
+value and a one-line reason. Every morning it is repriced against the live order books and published as the brief's
+Mispricing hunt section (https://morningbrief.dorup.dk/#hunt). It was a page of its own at `/hunt/` until 12 Nov 2026;
+that address now forwards to the section.
 Return is fair ÷ ask − 1 held to resolution, plus Polymarket's 3.25% APR holding reward on markets that pay it
 (Gamma flag `holdingRewardsEnabled`; those rows get a gold badge). The book is ranked by that return as a yearly rate,
 return × 365 / days (simple, with days counted as at least 14), so a small edge that resolves in weeks beats a big one
@@ -78,7 +82,7 @@ whatever their rate (slower ones included, sorted by rate among themselves) and 
     python3 hunt/hunt.py set|drop|add|note ...   # judgement: fair values, reasons, new picks, "what changed" lines
     python3 hunt/hunt.py ingest   # full review: read the research subagents' fair values, print MISSING/FLAG/BOOK DIFF
     python3 hunt/hunt.py smart    # smart-money share (top-20 holders scored by leaderboard PnL)
-    python3 hunt/hunt.py build    # site/hunt/{index.html,state.json,wallets.json,summary.json}
+    python3 hunt/hunt.py build    # hunt/work/section.html (refresh.py puts it on the brief), site/hunt/*.json
 
 ### Full review
 
@@ -105,7 +109,7 @@ many Starship launches reach space in 2026?" stays in: its "less than 5" rung is
    carries `--end <date>`, so the pick is ranked the same way. The routine checks each FLAG itself before it `add`s it
    (`add <event> <market id>`).
 
-The page's stamp shows how many candidate markets were researched that day.
+The hunt section's stamp shows how many candidate markets were researched that day.
 
 Claude Code caps WebSearch at 200 calls by default, shared by the main agent and every subagent, which the review
 outgrew (on 9 Nov 2026 the subagents ran out partway and later batches kept the previous day's values).
@@ -130,10 +134,14 @@ Every row has a Rec column (`advice()`). A held market (in the positions table, 
 the bid is at or above fair plus the reward, **Reduce** when what is left over selling into the bid is under +3% or 10%
 a year (the bars a pick needs to stay in the book), **Expand** when buying more at the ask would make the main list, and
 **Keep** otherwise. Any other pick gets **Bigger/Smaller/Same edge**: its return to resolution against the last run.
-The page's **Refresh prices** button refetches every order book, updates both the best bid and the best ask on each
+The hunt section's **Refresh prices** button refetches every order book, updates both the best bid and the best ask on each
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
 edge then measured against the build. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
 `advice()`, so a rule change needs the same change there.
 
-Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved". The page prints well as
-A4 landscape (browser Print → PDF).
+Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved".
+
+The section's styles are nested under `#hunt` (CSS nesting) so they stay out of the rest of the brief, and its first
+rules undo the brief's own table and list rules inside it. Its anchors are `hunt-` prefixed (`#hunt-positions`,
+`#hunt-main`, ...); the brief's "fair · hold vs sell" chips link to `#hunt-positions`. The section is wider than the rest of the brief (up to 1304px against 1124px) so the hunt's tables fit; below 1040px they
+turn into one card per row, and in between they scroll inside their boxes.

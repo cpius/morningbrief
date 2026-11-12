@@ -2,7 +2,7 @@
 """Mispricing hunt: a book of Polymarket picks with my fair values, repriced every morning.
 
 The book (picks, fair values, reasons, notes) is carried from run to run in hunt/work/state.json.
-`build` publishes it next to the page as site/hunt/state.json, and the next run's `pull` reads it back
+`build` publishes it with the site as site/hunt/state.json, and the next run's `pull` reads it back
 from the live site, so the cloud routine needs no git push. The repo copy hunt/seed.json is the fallback.
 
     python3 hunt/hunt.py pull                 # load the book (live site, else seed), apply hunt/updates.json; new day: last ask becomes "previous"
@@ -16,7 +16,7 @@ from the live site, so the cloud routine needs no git push. The repo copy hunt/s
     python3 hunt/hunt.py note "<one line on what changed>"
     python3 hunt/hunt.py ingest               # full review: read the subagents' fair values, print MISSING/FLAG/BOOK DIFF
     python3 hunt/hunt.py smart                # smart-money share from top holders and leaderboard PnL
-    python3 hunt/hunt.py build                # write site/hunt/{index.html,state.json,wallets.json,summary.json}
+    python3 hunt/hunt.py build                # write the brief's hunt section (hunt/work/section.html) and site/hunt/*.json
 
 Return = fair / ask - 1, held to resolution, plus Polymarket's 3.25% APR holding reward where the market pays it.
 The book is ranked by that return as a yearly rate, return * 365 / days (days at least 14), so a small edge that
@@ -42,8 +42,6 @@ from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, ROOT)
-from favicon import FAVICON  # noqa: E402  (shared with the brief)
 WORK = os.path.join(HERE, 'work')
 STATE = os.path.join(WORK, 'state.json')
 WALLETS = os.path.join(WORK, 'wallets.json')
@@ -54,6 +52,7 @@ SEED = os.path.join(HERE, 'seed.json')
 SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
 UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull
 SITE = os.path.join(ROOT, 'site', 'hunt')
+SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page
 LIVE = 'https://nothing-ever-happens-book.vercel.app/hunt/'
 GAMMA, CLOB, DATA = 'https://gamma-api.polymarket.com', 'https://clob.polymarket.com', 'https://data-api.polymarket.com'
 UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'}
@@ -891,8 +890,11 @@ def cmd_build(a):
     st['built'] = NOW.isoformat(timespec='seconds')
 
     os.makedirs(SITE, exist_ok=True)
-    with open(os.path.join(SITE, 'index.html'), 'w') as fh:
+    os.makedirs(WORK, exist_ok=True)
+    with open(SECTION, 'w') as fh:
         fh.write(render(st, main, extra, noask, held))
+    with open(os.path.join(SITE, 'index.html'), 'w') as fh:  # /hunt/ now only forwards to the brief's section
+        fh.write(REDIRECT)
     write(STATE, st)
     write(os.path.join(SITE, 'state.json'), st)
     with open(WALLETS) as src, open(os.path.join(SITE, 'wallets.json'), 'w') as dst:
@@ -913,7 +915,7 @@ def cmd_build(a):
                    held_edge=round(sum(h['edge'] for _, h in held if h), 2),
                    review=st['review'] if (st.get('review') or {}).get('day') == str(TODAY) else None)
     write(os.path.join(SITE, 'summary.json'), summary)
-    print(f"built site/hunt/index.html: {len(main)} main, {len(extra)} appendix, {len(noask)} without an ask, "
+    print(f"built the hunt section (hunt/work/section.html): {len(main)} main, {len(extra)} appendix, {len(noask)} without an ask, "
           f"{summary['hold']} earn the APR reward, {summary['new']} new today, {len(st['dropped'])} dropped, "
           f"{len(st['resolved'])} resolved")
     for p, e in main[:10]:
@@ -1098,6 +1100,7 @@ def held_table_html(held):
 
 
 def render(st, main, extra, noask, held):
+    """The brief's Mispricing hunt section: markup, styles and scripts, all scoped to #hunt. refresh.py includes it."""
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
     n_fast, n_slow = len(main), len(extra)  # by rate, for the summary stats
@@ -1108,46 +1111,46 @@ def render(st, main, extra, noask, held):
     extra = [r for r in extra if not is_new(r[0])]
     boxes = []
     if st['notes']:
-        boxes.append('<div class="box warn" id="changes"><h3>What changed</h3><ul>' +
+        boxes.append('<div class="box warn" id="hunt-changes"><h3>What changed</h3><ul>' +
                      ''.join(f'<li>{esc(n)}</li>' for n in st['notes']) + '</ul></div>')
     if st['resolved']:
-        boxes.append('<div class="box" id="resolved"><h3>Resolved since the last run</h3><ul>' + ''.join(
+        boxes.append('<div class="box" id="hunt-resolved"><h3>Resolved since the last run</h3><ul>' + ''.join(
             f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a>: our {p["side"]} '
             f'<b class="{"up" if p["won"] else "down"}">{"won" if p["won"] else "lost"}</b>'
             f'{" (held)" if p.get("held") else ""}</li>' for p in st['resolved']) +
             '</ul></div>')
     boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
-    # the tab bar: one tab per section on the page, in page order, with its count
-    tabs = [('Overview', 'top', None)]
+    # the tab bar: one tab per part of the hunt section, in page order, with its count
+    tabs = [('Overview', 'hunt', None)]
     if st['notes']:
-        tabs.append(('What changed', 'changes', None))
+        tabs.append(('What changed', 'hunt-changes', None))
     if st['resolved']:
-        tabs.append(('Resolved', 'resolved', len(st['resolved'])))
+        tabs.append(('Resolved', 'hunt-resolved', len(st['resolved'])))
     if held:
-        tabs.append(('Positions', 'positions', len(held)))
-    tabs.append(('Main list', 'main', len(main)))
+        tabs.append(('Positions', 'hunt-positions', len(held)))
+    tabs.append(('Main list', 'hunt-main', len(main)))
     if extra:
-        tabs.append(('Slower', 'slower', len(extra)))
+        tabs.append(('Slower', 'hunt-slower', len(extra)))
     if noask:
-        tabs.append(('No sellers', 'noask', len(noask)))
+        tabs.append(('No sellers', 'hunt-noask', len(noask)))
     if st['dropped']:
-        tabs.append(('Dropped', 'dropped', len(st['dropped'])))
-    tabs_html = ('<div class="bar"><nav class="tabs" aria-label="Sections">' + ''.join(
+        tabs.append(('Dropped', 'hunt-dropped', len(st['dropped'])))
+    tabs_html = ('<div class="bar"><nav class="tabs" aria-label="Hunt sections">' + ''.join(
         f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>'
-        f'<button type="button" class="refresh" id="refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
+        f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'title="Fetch the current order books from Polymarket and redo the bids, asks, returns and recommendations at '
         f'those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
         f'<span class="lbl">Refresh prices</span><span class="when"></span></button></div>')
     dropped = ''
     if st['dropped']:
-        dropped = ('<section id="dropped"><h2>Dropped today</h2><ul class="plain">' + ''.join(
+        dropped = ('<section id="hunt-dropped"><h3>Dropped today</h3><ul class="plain">' + ''.join(
             f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]} '
             f'{px(p.get("prev_ask"))} → {px(p.get("ask"))}</span><div class="li-body">{esc(p["reason"])}</div></li>'
             for p in st['dropped']) + '</ul></section>')
     noask_html = ''
     if noask:
-        noask_html = ('<section id="noask"><h2>No sellers today</h2><p class="note">Still in the book, but nobody is offering our side, '
+        noask_html = ('<section id="hunt-noask"><h3>No sellers today</h3><p class="note">Still in the book, but nobody is offering our side, '
                       'so there is no return to show.</p><ul class="plain">' + ''.join(
                           f'<li {live_attrs(p)}><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
                           f'{p["fair"]:.2f}{f", bid {px(p.get("bid"))}" if p.get("bid") else ""}</span><span class="live"></span></li>'
@@ -1156,7 +1159,7 @@ def render(st, main, extra, noask, held):
     unvalued = sum(1 for p, _ in held if p.get('fair') is None)
     held_html = ''
     if held:
-        held_html = (f'<section id="positions"><h2>Your open positions: {len(held)}</h2><p class="note">The same analysis on '
+        held_html = (f'<section id="hunt-positions"><h3>Your open positions: {len(held)}</h3><p class="note">The same analysis on '
                      'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling into the '
                      'best bid now: fair ÷ bid − 1, plus the holding reward where the market pays it. Red means the bid is above '
                      'my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares × (fair + reward − bid). '
@@ -1170,234 +1173,210 @@ def render(st, main, extra, noask, held):
     main_h2 = (f'Main list: today\'s {len(fresh)} new pick{"s" * (len(fresh) != 1)} first, then {rest} returning at least '
                f'{MAIN_ANN * 100:.0f}% a year' if fresh else
                f'Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year')
-    extra_html = (f'<section id="slower"><h2>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h2>{table_html(extra)}</section>'
+    extra_html = (f'<section id="hunt-slower"><h3>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h3>{table_html(extra)}</section>'
                   if extra else '')
     new = [p for p, _ in rows if p.get('added') == str(TODAY)]
     jump = lambda text, n, href: f'<a href="{href}">{text}</a>' if n else text  # "new" goes to the first new row
     new_href = f'#m{esc(new[0]["id"])}' if new else ''
-    changes = (f'<span class="v">{jump(len(new), len(new), new_href)} / {jump(len(st["dropped"]), len(st["dropped"]), "#dropped")}</span>'
-               f'<span class="s">{jump("new", len(new), new_href)} / {jump("dropped", len(st["dropped"]), "#dropped")}</span>')
+    changes = (f'<span class="v">{jump(len(new), len(new), new_href)} / {jump(len(st["dropped"]), len(st["dropped"]), "#hunt-dropped")}</span>'
+               f'<span class="s">{jump("new", len(new), new_href)} / {jump("dropped", len(st["dropped"]), "#hunt-dropped")}</span>')
     swept = st.get('swept') or {}
     rv = st.get('review') or {}
     reviewed = (f"<br>{rv['markets']:,} of {rv['of']:,} candidate markets researched today" if rv.get('day') == str(TODAY)
                 else '')
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex">
-<link rel="icon" type="image/svg+xml" href="{FAVICON}">
-<title>Mispricing hunt · {TODAY:%-d %b %Y}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@400;500;600&display=swap">
-<style>
-:root {{
-  --ground: #F3F5F9; --surface: #FFFFFF; --surface-2: #EEF1F7; --ink: #141A26; --muted: #5D6679; --faint: #8A93A6;
-  --rule: #DCE1EA; --accent: #2F4BCF; --up: #177A47; --down: #BD3434; --warn-bg: #FFF1D6; --warn-ink: #8A5300;
+    return f'''<style>
+/* The brief's Mispricing hunt section. Every rule is nested under #hunt so none reaches the rest of the brief. */
+#hunt {{
   --gold: #8F6200; --gold-bg: #FFF4D1; --gold-line: #E9C46A;
-  --display: "Bricolage Grotesque", "Schibsted Grotesk", system-ui, sans-serif;
-  --body: "Schibsted Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-}}
-@media (prefers-color-scheme: dark) {{
-  :root:not([data-theme="light"]) {{
-    --ground: #0D111A; --surface: #141A25; --surface-2: #1A2130; --ink: #E7EAF1; --muted: #9AA3B5; --faint: #6E7789;
-    --rule: #262E3D; --accent: #8CA0FF; --up: #4FC98C; --down: #F27A7A; --warn-bg: #3A2A0B; --warn-ink: #F5C165;
-    --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; min-width: 0; scroll-margin-top: 16px;
+  /* the brief's own table, list and cell rules reach in here: undo what the hunt doesn't set itself */
+  table.hunt {{ min-width: 0; }}
+  tbody tr:hover td {{ background: none; }}
+  td.mkt {{ max-width: none; }}
+  td.mkt a {{ display: inline; }}
+  td.num {{ color: var(--ink); }}
+  ul {{ list-style: disc; }}
+  li {{ display: list-item; padding: 0; border: 0; gap: 0; }}
+  .note {{ display: block; font-weight: 400; }}
+  .li-body {{ max-width: none; }}
+  .stat {{ border-bottom: 0; }}
+  .stat .s {{ font-family: var(--body); }}
+
+  .up {{ color: var(--up); }} .down {{ color: var(--down); }} .faint {{ color: var(--faint); }} .gold {{ color: var(--gold); }}
+  .hunt-head {{ display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px 32px; }}
+  .hunt-head h2 {{ font-size: clamp(26px, 3.2vw, 34px); font-weight: 700; line-height: 1.05; letter-spacing: -.02em; margin: 0; }}
+  .lede {{ margin: 8px 0 0; color: var(--muted); max-width: 72ch; font-size: 14px; }}
+  .hunt-stamp {{ font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; line-height: 1.6; }}
+  .summary {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
+  .stat {{ padding: 14px 20px 16px 0; display: grid; gap: 2px; align-content: start; }}
+  .stat + .stat {{ padding-left: 20px; border-left: 1px solid var(--rule); }}
+  .stat .k {{ font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
+  .stat .v {{ font-family: var(--mono); font-size: 24px; font-weight: 500; }}
+  .stat .s {{ font-size: 12.5px; color: var(--muted); }}
+  section, tr, .box {{ scroll-margin-top: 64px; }}
+  section > h3 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
+  .bar {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: stretch; gap: 10px; margin: 0 -28px; padding: 0 16px; min-width: 0;
+          background: var(--ground); box-shadow: inset 0 -1px var(--rule); }}
+  .tabs {{ flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }}
+  .refresh {{ flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+              font: 600 13px var(--body); color: var(--accent); background: var(--surface); cursor: pointer;
+              border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; }}
+  .refresh:hover {{ background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }}
+  .refresh:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+  .refresh:disabled {{ cursor: progress; opacity: .7; }}
+  .refresh .when {{ font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--muted); }}
+  .refresh .when:empty {{ display: none; }}
+  .refresh.busy span[aria-hidden] {{ animation: hunt-spin 1s linear infinite; }}
+  .refresh.err {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }}
+  td.flash {{ animation: hunt-flash 2.5s ease-out; }}
+  @media (prefers-reduced-motion: reduce) {{ td.flash, .refresh.busy span[aria-hidden] {{ animation: none; }} }}
+  .live {{ color: var(--muted); font-size: 13px; }}
+  dialog.moves {{ width: min(680px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; color: var(--ink); background: var(--surface);
+                  border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 24px 64px rgb(0 0 0 / .3); }}
+  dialog.moves[open] {{ display: flex; flex-direction: column; }}
+  dialog.moves::backdrop {{ background: rgb(8 12 20 / .5); }}
+  .moves-head {{ display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 18px 20px 12px; border-bottom: 1px solid var(--rule); }}
+  .moves-head h2 {{ margin: 0; }}
+  .moves-head p {{ margin: 2px 0 0; font-size: 13px; color: var(--muted); }}
+  .moves-close {{ flex: none; width: 32px; height: 32px; font-size: 20px; line-height: 1; color: var(--muted); background: none; cursor: pointer;
+                  border: 1px solid var(--rule); border-radius: 999px; }}
+  .moves-close:hover {{ color: var(--ink); }}
+  .moves-close:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+  .moves-list {{ list-style: none; margin: 0; padding: 0 20px; overflow-y: auto; }}
+  .moves-list li {{ display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 4px 16px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--rule); }}
+  .moves-list li:last-child {{ border-bottom: 0; }}
+  .moves-list a {{ font-weight: 600; line-height: 1.35; }}
+  .moves-list .sub {{ grid-column: 1; }}
+  .moves-list .fair {{ grid-column: 2 / -1; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
+  .moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
+  .moves-list .chg {{ color: var(--muted); }}
+  .moves-list .d {{ font-weight: 600; }}
+  .moves-empty {{ margin: 0; padding: 20px; color: var(--muted); }}
+  .moves-foot {{ margin: 0; padding: 10px 20px 14px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); }}
+  .moves-foot:empty {{ display: none; }}
+  .tabs::-webkit-scrollbar {{ display: none; }}
+  .tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px;
+             font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
+  .tabs a:hover {{ color: var(--ink); }}
+  .tabs a[aria-current] {{ color: var(--ink); border-bottom-color: var(--accent); }}
+  .tabs a span {{ font-family: var(--mono); font-size: 11.5px; font-weight: 500; padding: 0 6px; border-radius: 999px;
+                  background: var(--surface-2); color: var(--muted); }}
+  .tabs a[aria-current] span {{ background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }}
+  tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
+  .stat.goldk {{ background: var(--gold-bg); padding-left: 20px; }}
+  .stat.goldk .v {{ color: var(--gold); }}
+  .boxes {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }}
+  .box {{ border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 8px 8px 0; padding: 12px 16px; font-size: 14px; }}
+  .box.warn {{ border-color: var(--warn-ink); }}
+  .box h3 {{ margin: 0 0 4px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }}
+  .box p {{ margin: 0; }}
+  .box ul {{ margin: 0; padding-left: 18px; display: grid; gap: 4px; }}
+  .box.warn ul {{ display: block; columns: 2 380px; column-gap: 40px; }}  /* the notes run two columns when the box is wide */
+  .box.warn li {{ break-inside: avoid; margin-bottom: 6px; }}
+  .table-box {{ background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }}
+  table.hunt {{ width: 100%; border-collapse: collapse; }}
+  th {{ text-align: right; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 12px 10px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }}
+  th.mkt {{ text-align: left; }}
+  td {{ padding: 12px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }}
+  tr:last-child td {{ border-bottom: 0; }}
+  td.n, th.n {{ width: 36px; color: var(--faint); text-align: right; font-family: var(--mono); font-size: 12.5px; padding-right: 0; }}
+  td.mkt {{ min-width: 260px; width: 42%; }}
+  td.mkt a {{ font-weight: 600; line-height: 1.35; }}
+  .meta {{ display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; }}
+  .side, .apr, .tag, .new, .held {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
+  .side {{ font-family: var(--mono); border: 1px solid var(--rule); background: var(--surface-2); }}
+  .side.no {{ color: var(--down); }} .side.yes {{ color: var(--up); }}
+  .apr {{ color: var(--gold); background: var(--gold-bg); border: 1px solid var(--gold-line); }}
+  .tag {{ color: var(--muted); border: 1px solid var(--rule); }}
+  .new {{ color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }}
+  .held {{ color: var(--surface); background: var(--ink); }}
+  b.flat {{ color: var(--muted); }}
+  td.rec, th.rec {{ text-align: left; white-space: nowrap; }}
+  td.rec b {{ display: inline-block; font-size: 12.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; line-height: 1.5;
+              color: var(--ink); background: var(--surface-2); }}
+  td.rec b.up {{ color: var(--up); background: color-mix(in srgb, var(--up) 13%, transparent); }}
+  td.rec b.down {{ color: var(--down); background: color-mix(in srgb, var(--down) 13%, transparent); }}
+  td.rec b.warn {{ color: var(--warn-ink); background: var(--warn-bg); }}
+  td.rec b.flat {{ color: var(--muted); background: none; padding-left: 0; }}
+  .why {{ margin: 6px 0 0; font-size: 13px; color: var(--muted); max-width: 80ch; }}
+  td.num {{ text-align: right; font-family: var(--mono); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }}
+  td.num b {{ font-weight: 500; }}
+  td.ret b {{ font-weight: 600; }}
+  td.r3 b {{ color: var(--up); }} td.r2 b {{ color: color-mix(in srgb, var(--up) 75%, var(--ink)); }} td.r0 b {{ color: var(--muted); }}
+  .sub {{ font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: inherit; }}
+  .sub.up {{ color: var(--up); }} .sub.down {{ color: var(--down); }} .sub.gold {{ color: var(--gold); }}
+  .note {{ color: var(--muted); font-size: 13.5px; margin: 0 0 8px; max-width: 90ch; }}
+  ul.plain {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }}
+  ul.plain li {{ padding-top: 10px; border-top: 1px solid var(--rule); }}
+  ul.plain a {{ font-weight: 600; }}
+  .li-body {{ color: var(--muted); font-size: 13.5px; }}
+  footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: grid; gap: 6px; }}
+  footer p {{ margin: 0; }}
+  @media (max-width: 720px) {{
+    .bar {{ padding: 0 4px; gap: 4px; }}
+    .refresh {{ padding: 5px 10px; margin-right: 8px; }}
+    .refresh .lbl {{ display: none; }}
+    .hunt-stamp {{ text-align: left; }}
+    .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
+    .stat.goldk {{ padding-left: 12px; }}
+    .boxes {{ grid-template-columns: 1fr; }}
+    /* the moves modal: the name takes its own line, the numbers sit under it */
+    .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
+    .moves-list a {{ grid-column: 1 / -1; }}
+    .moves-list .sub {{ grid-row: 2 / span 2; }}
+    .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
+    .moves-list .d {{ grid-column: 3; grid-row: 2; }}
+    .moves-list .fair {{ grid-row: 3; }}
+  }}
+  @media (max-width: 1040px) {{
+    table.hunt thead {{ display: none; }}
+    table.hunt, table.hunt tbody {{ display: block; }}
+    table.hunt tr {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px 12px; padding: 14px 14px 16px; border-bottom: 1px solid var(--rule); }}
+    table.hunt tr:last-child {{ border-bottom: 0; }}
+    table.hunt td {{ padding: 0; border: 0; }}
+    td.n {{ display: none; }}
+    td.mkt {{ grid-column: 1 / -1; min-width: 0; width: auto; }}
+    td.num {{ text-align: left; white-space: normal; }}
+    td.num::before, td.rec::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
+  }}
+  @media print {{
+    .bar {{ display: none; }}
+    td {{ padding: 5px 6px; }} th {{ padding: 6px; }}
+    td.mkt {{ min-width: 0; }}
+    tr {{ break-inside: avoid; }}
+    .table-box {{ border: 0; }}
   }}
 }}
-:root[data-theme="dark"] {{
-  --ground: #0D111A; --surface: #141A25; --surface-2: #1A2130; --ink: #E7EAF1; --muted: #9AA3B5; --faint: #6E7789;
-  --rule: #262E3D; --accent: #8CA0FF; --up: #4FC98C; --down: #F27A7A; --warn-bg: #3A2A0B; --warn-ink: #F5C165;
-  --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16;
+@media (prefers-color-scheme: dark) {{
+  :root:not([data-theme="light"]) #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 }}
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }}
-.wrap {{ max-width: 1360px; margin: 0 auto; padding: 40px 28px 64px; display: grid; gap: 28px; }}
-a {{ color: inherit; text-decoration: none; }}
-a:hover {{ color: var(--accent); }}
-a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }}
-.up {{ color: var(--up); }} .down {{ color: var(--down); }} .faint {{ color: var(--faint); }} .gold {{ color: var(--gold); }}
-header {{ display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px 32px; }}
-.eyebrow {{ font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
-.eyebrow a {{ color: var(--accent); }}
-h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 42px); line-height: 1.05; letter-spacing: -.02em; margin: 6px 0 0; }}
-.lede {{ margin: 8px 0 0; color: var(--muted); max-width: 72ch; font-size: 14px; }}
-.stamp {{ font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; line-height: 1.6; }}
-.summary {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
-.stat {{ padding: 14px 20px 16px 0; display: grid; gap: 2px; align-content: start; }}
-.stat + .stat {{ padding-left: 20px; border-left: 1px solid var(--rule); }}
-.stat .k {{ font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
-.stat .v {{ font-family: var(--mono); font-size: 24px; font-weight: 500; }}
-.stat .s {{ font-size: 12.5px; color: var(--muted); }}
-section, tr, header, .box {{ scroll-margin-top: 64px; }}
+:root[data-theme="dark"] #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 @media (prefers-reduced-motion: no-preference) {{ html {{ scroll-behavior: smooth; }} }}
-.bar {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: stretch; gap: 10px; margin: 0 -28px; padding: 0 16px; min-width: 0;
-        background: var(--ground); box-shadow: inset 0 -1px var(--rule); }}
-.tabs {{ flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }}
-.refresh {{ flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
-            font: 600 13px var(--body); color: var(--accent); background: var(--surface); cursor: pointer;
-            border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; }}
-.refresh:hover {{ background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }}
-.refresh:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
-.refresh:disabled {{ cursor: progress; opacity: .7; }}
-.refresh .when {{ font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--muted); }}
-.refresh .when:empty {{ display: none; }}
-.refresh.busy span[aria-hidden] {{ animation: spin 1s linear infinite; }}
-.refresh.err {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }}
-@keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-@keyframes flash {{ from {{ background: color-mix(in srgb, var(--accent) 22%, transparent); }} to {{ background: transparent; }} }}
-td.flash {{ animation: flash 2.5s ease-out; }}
-@media (prefers-reduced-motion: reduce) {{ td.flash, .refresh.busy span[aria-hidden] {{ animation: none; }} }}
-.live {{ color: var(--muted); font-size: 13px; }}
-dialog.moves {{ width: min(680px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; color: var(--ink); background: var(--surface);
-                border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 24px 64px rgb(0 0 0 / .3); }}
-dialog.moves[open] {{ display: flex; flex-direction: column; }}
-dialog.moves::backdrop {{ background: rgb(8 12 20 / .5); }}
-.moves-head {{ display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 18px 20px 12px; border-bottom: 1px solid var(--rule); }}
-.moves-head h2 {{ margin: 0; }}
-.moves-head p {{ margin: 2px 0 0; font-size: 13px; color: var(--muted); }}
-.moves-close {{ flex: none; width: 32px; height: 32px; font-size: 20px; line-height: 1; color: var(--muted); background: none; cursor: pointer;
-                border: 1px solid var(--rule); border-radius: 999px; }}
-.moves-close:hover {{ color: var(--ink); }}
-.moves-close:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
-.moves-list {{ list-style: none; margin: 0; padding: 0 20px; overflow-y: auto; }}
-.moves-list li {{ display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 4px 16px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--rule); }}
-.moves-list li:last-child {{ border-bottom: 0; }}
-.moves-list a {{ font-weight: 600; line-height: 1.35; }}
-.moves-list .sub {{ grid-column: 1; }}
-.moves-list .fair {{ grid-column: 2 / -1; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
-.moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
-.moves-list .chg {{ color: var(--muted); }}
-.moves-list .d {{ font-weight: 600; }}
-.moves-empty {{ margin: 0; padding: 20px; color: var(--muted); }}
-.moves-foot {{ margin: 0; padding: 10px 20px 14px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); }}
-.moves-foot:empty {{ display: none; }}
-.tabs::-webkit-scrollbar {{ display: none; }}
-.tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px;
-           font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
-.tabs a:hover {{ color: var(--ink); }}
-.tabs a[aria-current] {{ color: var(--ink); border-bottom-color: var(--accent); }}
-.tabs a span {{ font-family: var(--mono); font-size: 11.5px; font-weight: 500; padding: 0 6px; border-radius: 999px;
-                background: var(--surface-2); color: var(--muted); }}
-.tabs a[aria-current] span {{ background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }}
-tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
-.stat.goldk {{ background: var(--gold-bg); padding-left: 20px; }}
-.stat.goldk .v {{ color: var(--gold); }}
-.boxes {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }}
-.box {{ border-left: 3px solid var(--accent); background: var(--surface); border-radius: 0 8px 8px 0; padding: 12px 16px; font-size: 14px; }}
-.box.warn {{ border-color: var(--warn-ink); }}
-.box h3 {{ margin: 0 0 4px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }}
-.box p {{ margin: 0; }}
-.box ul {{ margin: 0; padding-left: 18px; display: grid; gap: 4px; }}
-.box.warn ul {{ display: block; columns: 2 380px; column-gap: 40px; }}  /* the notes run two columns when the box is wide */
-.box.warn li {{ break-inside: avoid; margin-bottom: 6px; }}
-h2 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
-.table-box {{ background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }}
-table.hunt {{ width: 100%; border-collapse: collapse; }}
-th {{ text-align: right; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 12px 10px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }}
-th.mkt {{ text-align: left; }}
-td {{ padding: 12px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }}
-tr:last-child td {{ border-bottom: 0; }}
-td.n, th.n {{ width: 36px; color: var(--faint); text-align: right; font-family: var(--mono); font-size: 12.5px; padding-right: 0; }}
-td.mkt {{ min-width: 260px; width: 42%; }}
-td.mkt a {{ font-weight: 600; line-height: 1.35; }}
-.meta {{ display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; }}
-.side, .apr, .tag, .new {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
-.side {{ font-family: var(--mono); border: 1px solid var(--rule); background: var(--surface-2); }}
-.side.no {{ color: var(--down); }} .side.yes {{ color: var(--up); }}
-.apr {{ color: var(--gold); background: var(--gold-bg); border: 1px solid var(--gold-line); }}
-.tag {{ color: var(--muted); border: 1px solid var(--rule); }}
-.new {{ color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }}
-.held {{ color: var(--surface); background: var(--ink); }}
-b.flat {{ color: var(--muted); }}
-td.rec, th.rec {{ text-align: left; white-space: nowrap; }}
-td.rec b {{ display: inline-block; font-size: 12.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; line-height: 1.5;
-            color: var(--ink); background: var(--surface-2); }}
-td.rec b.up {{ color: var(--up); background: color-mix(in srgb, var(--up) 13%, transparent); }}
-td.rec b.down {{ color: var(--down); background: color-mix(in srgb, var(--down) 13%, transparent); }}
-td.rec b.warn {{ color: var(--warn-ink); background: var(--warn-bg); }}
-td.rec b.flat {{ color: var(--muted); background: none; padding-left: 0; }}
-.wrap > * {{ min-width: 0; }}  /* a wide table scrolls in its box instead of widening the page */
-.why {{ margin: 6px 0 0; font-size: 13px; color: var(--muted); max-width: 80ch; }}
-td.num {{ text-align: right; font-family: var(--mono); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }}
-td.num b {{ font-weight: 500; }}
-td.ret b {{ font-weight: 600; }}
-td.r3 b {{ color: var(--up); }} td.r2 b {{ color: color-mix(in srgb, var(--up) 75%, var(--ink)); }} td.r0 b {{ color: var(--muted); }}
-.sub {{ font-size: 12px; color: var(--muted); margin-top: 2px; }}
-.sub.up {{ color: var(--up); }} .sub.down {{ color: var(--down); }} .sub.gold {{ color: var(--gold); }}
-.note {{ color: var(--muted); font-size: 13.5px; margin: 0 0 8px; max-width: 90ch; }}
-ul.plain {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }}
-ul.plain li {{ padding-top: 10px; border-top: 1px solid var(--rule); }}
-ul.plain a {{ font-weight: 600; }}
-.li-body {{ color: var(--muted); font-size: 13.5px; }}
-footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: grid; gap: 6px; }}
-footer p {{ margin: 0; }}
-@media (max-width: 720px) {{
-  .wrap {{ padding: 24px 16px 48px; }}
-  .bar {{ margin: 0 -16px; padding: 0 4px; gap: 4px; }}
-  .refresh {{ padding: 5px 10px; margin-right: 8px; }}
-  .refresh .lbl {{ display: none; }}
-  .stamp {{ text-align: left; }}
-  .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-  .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
-  .stat.goldk {{ padding-left: 12px; }}
-  .boxes {{ grid-template-columns: 1fr; }}
-  /* the moves modal: the name takes its own line, the numbers sit under it */
-  .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
-  .moves-list a {{ grid-column: 1 / -1; }}
-  .moves-list .sub {{ grid-row: 2 / span 2; }}
-  .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
-  .moves-list .d {{ grid-column: 3; grid-row: 2; }}
-  .moves-list .fair {{ grid-row: 3; }}
-}}
-@media (max-width: 1040px) {{
-  table.hunt thead {{ display: none; }}
-  table.hunt, table.hunt tbody {{ display: block; }}
-  table.hunt tr {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px 12px; padding: 14px 14px 16px; border-bottom: 1px solid var(--rule); }}
-  table.hunt tr:last-child {{ border-bottom: 0; }}
-  table.hunt td {{ padding: 0; border: 0; }}
-  td.n {{ display: none; }}
-  td.mkt {{ grid-column: 1 / -1; min-width: 0; width: auto; }}
-  td.num {{ text-align: left; white-space: normal; }}
-  td.num::before, td.rec::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
-}}
-@media print {{
-  @page {{ size: A4 landscape; margin: 10mm; }}
-  :root {{ --ground: #fff; --surface: #fff; --surface-2: #f4f4f4; --ink: #111; --muted: #444; --faint: #777; --rule: #ddd;
-           --gold: #8F6200; --gold-bg: #FFF4D1; --gold-line: #E9C46A; --up: #177A47; --down: #BD3434; --accent: #2F4BCF; }}
-  body {{ font-size: 9pt; }}
-  .wrap {{ max-width: none; padding: 0; gap: 12px; }}
-  .eyebrow a, .bar {{ display: none; }}
-  td {{ padding: 5px 6px; }} th {{ padding: 6px; }}
-  td.mkt {{ min-width: 0; width: 42%; }}
-  tr {{ break-inside: avoid; }}
-  .table-box {{ border: 0; }}
-  * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-}}
-</style></head>
-<body><div class="wrap">
-  <header id="top">
+@keyframes hunt-spin {{ to {{ transform: rotate(360deg); }} }}
+@keyframes hunt-flash {{ from {{ background: color-mix(in srgb, var(--accent) 22%, transparent); }} to {{ background: transparent; }} }}
+</style>
+<section id="hunt" aria-labelledby="hunt-title">
+  <div class="hunt-head">
     <div>
-      <div class="eyebrow"><a href="/">← Morning brief</a> · Polymarket</div>
-      <h1>Mispricing hunt</h1>
+      <h2 id="hunt-title">Mispricing hunt</h2>
       <p class="lede">Markets where my fair value beats the best ask, mostly "nothing ever happens" NO bets on politics and
       geopolitics, ranked by annualized return: a small edge that pays out in weeks beats a big one that takes years.
       Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
     </div>
-    <div class="stamp"><span id="asks-at">Prices at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
-  </header>
-  <section class="summary" aria-label="Summary">
-    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{n_fast}</a></span><span class="s"><a href="#main">main list</a></span></div>
-    <div class="stat"><span class="k">Slower picks</span><span class="v">{jump(n_slow, n_slow, "#slower" if extra else "#main")}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
+    <div class="hunt-stamp"><span id="hunt-asks-at">Prices at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
+  </div>
+  <div class="summary" role="group" aria-label="Hunt summary">
+    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#hunt-main">{n_fast}</a></span><span class="s"><a href="#hunt-main">main list</a></span></div>
+    <div class="stat"><span class="k">Slower picks</span><span class="v">{jump(n_slow, n_slow, "#hunt-slower" if extra else "#hunt-main")}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
     <div class="stat goldk"><span class="k">Earn 3.25% APR</span><span class="v">{n_hold}</span><span class="s">gold badge</span></div>
-    <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
+    <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#hunt-positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
     <div class="stat"><span class="k">Changes today</span>{changes}</div>
-  </section>
+  </div>
   {tabs_html}
   {boxes_html}
   {held_html}
-  <section id="main"><h2>{main_h2}</h2>{main_html}</section>
+  <section id="hunt-main"><h3>{main_h2}</h3>{main_html}</section>
   {extra_html}
   {noask_html}
   {dropped}
@@ -1420,18 +1399,17 @@ footer p {{ margin: 0; }}
     <p>Holding-reward eligibility is Gamma's <i>holdingRewardsEnabled</i> flag, read today. Prices from Polymarket's CLOB.
     Rebuilt every morning by the morning brief routine.</p>
   </footer>
-</div>
-<dialog class="moves" id="moves" aria-labelledby="moves-title">
-  <div class="moves-head"><div><h2 id="moves-title">Biggest moves</h2><p id="moves-since"></p></div>
-    <button type="button" class="moves-close" id="moves-close" aria-label="Close">×</button></div>
-  <ol class="moves-list" id="moves-list"></ol>
-  <p class="moves-foot" id="moves-foot"></p>
-</dialog>
+  <dialog class="moves" id="hunt-moves" aria-labelledby="moves-title">
+    <div class="moves-head"><div><h2 id="moves-title">Biggest moves</h2><p id="moves-since"></p></div>
+      <button type="button" class="moves-close" id="moves-close" aria-label="Close">×</button></div>
+    <ol class="moves-list" id="moves-list"></ol>
+    <p class="moves-foot" id="moves-foot"></p>
+  </dialog>
+</section>
 <script>
-// Light up the tab of the section being read. A clicked tab stays lit until the reader scrolls themselves,
-// since a short last section can never scroll up to the bar.
+// Light up the tab of the hunt part being read. A clicked tab stays lit until the reader scrolls themselves.
 (() => {{
-  const nav = document.querySelector('.tabs');
+  const nav = document.querySelector('#hunt .tabs');
   if (!nav) return;
   const links = [...nav.querySelectorAll('a')];
   const targets = links.map(a => document.getElementById(a.hash.slice(1)));
@@ -1448,7 +1426,6 @@ footer p {{ margin: 0; }}
     let i = 0;
     targets.forEach((t, j) => {{ if (t && t.getBoundingClientRect().top <= line) i = j; }});
     if (nav.getBoundingClientRect().top > 1) i = 0;  // the bar hasn't stuck yet: still on the overview
-    else if (scrollY > 0 && innerHeight + scrollY >= document.documentElement.scrollHeight - 2) i = links.length - 1;
     light(i);
   }};
   links.forEach((a, j) => a.addEventListener('click', () => {{ pinned = j; light(j); }}));
@@ -1460,15 +1437,29 @@ footer p {{ margin: 0; }}
 }})();
 {REFRESH_JS}
 </script>
-</body></html>
 '''
 
 
-# The Refresh prices button: live order books from Polymarket's CLOB (it allows any origin), the same math as econ(),
+# /hunt/ was a page of its own until 12 Nov 2026. Links to it (bookmarks, old summaries) now land on the brief's
+# hunt section, the old #positions, #main, ... anchors on their hunt-prefixed parts there.
+REDIRECT = r'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="robots" content="noindex">
+<title>Mispricing hunt</title>
+<meta http-equiv="refresh" content="0; url=/#hunt">
+<script>
+const h = location.hash.slice(1), parts = ['changes', 'resolved', 'positions', 'main', 'slower', 'noask', 'dropped'];
+location.replace('/#' + (parts.includes(h) ? 'hunt-' + h : /^m\d+$/.test(h) ? h : 'hunt'));
+</script></head>
+<body><p>The mispricing hunt is now part of the <a href="/#hunt">morning brief</a>.</p></body></html>
+'''
+
+
+# The hunt section's Refresh prices button: live order books from Polymarket's CLOB (it allows any origin), the same math as econ(),
 # hold_econ() and advice(), written into the rows in place. Nothing is researched and nothing is saved.
 REFRESH_JS = r"""
 (() => {
-  const btn = document.getElementById('refresh');
+  const btn = document.getElementById('hunt-refresh');
   if (!btn) return;
   const APR = +btn.dataset.apr, MIN_DAYS = +btn.dataset.minDays, MAIN = +btn.dataset.main;
   const MIN_ANN = +btn.dataset.minAnn, MIN_EDGE = +btn.dataset.minEdge;
@@ -1572,7 +1563,7 @@ REFRESH_JS = r"""
     out.textContent = ` · ask now ${px(b.ask)} (${bid}), ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
   };
   // The modal after a refresh: the prices that moved most since the reader last saw them (the build, then each refresh).
-  const dlg = document.getElementById('moves'), seen = new Map(), TOP = 10;
+  const dlg = document.getElementById('hunt-moves'), seen = new Map(), TOP = 10;
   let sinceText = `the page was built at ${btn.dataset.built}`;
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const num = s => s === '' || s == null || isNaN(+s) ? null : +s;
@@ -1613,9 +1604,9 @@ REFRESH_JS = r"""
     dlg.querySelector('#moves-close').addEventListener('click', () => dlg.close());
     dlg.addEventListener('click', ev => { if (ev.target === dlg) dlg.close(); });  // a click on the backdrop
   }
-  const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('asks-at');
+  const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('hunt-asks-at');
   btn.addEventListener('click', async () => {
-    const rows = [...document.querySelectorAll('[data-token]')];
+    const rows = [...document.querySelectorAll('#hunt [data-token]')];
     const tokens = [...new Set(rows.map(r => r.dataset.token))];
     btn.disabled = true; btn.classList.add('busy'); btn.classList.remove('err'); lbl.textContent = 'Refreshing…';
     try {
