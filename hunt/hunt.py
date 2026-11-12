@@ -193,6 +193,40 @@ def hold_econ(p):
                 value=h['size'] * bid)
 
 
+def advice(p):
+    """The Rec column: (label, tone, sub-line), or None.
+
+    A held position: Sell when the bid is at or above fair (plus the reward); Reduce when what is left to earn over
+    selling into the bid would not keep a pick in the book (under +3% to resolution or 10% a year); Expand when buying
+    more at the ask would make the main list; else Keep. Any other pick: whether its edge (return to resolution) grew or
+    shrank since the last run. The page's Refresh prices button redoes this in JavaScript (REFRESH_JS)."""
+    if p.get('held'):
+        if p.get('fair') is None:
+            return None
+        h, e = hold_econ(p), econ(p)
+        if h and h['tot'] <= 0:
+            return 'Sell', 'down', 'bid ≥ fair'
+        if h and weak(h):
+            return 'Reduce', 'warn', f"{pct(h['ann'])}/yr left" if h['ann'] < MIN_ANN else f"{h['tot'] * 100:+.1f}% left"
+        if e and e['ann'] >= MAIN_ANN and e['tot'] >= MIN_EDGE:
+            return 'Expand', 'up', f"{pct(e['ann'])}/yr at ask"
+        return 'Keep', 'ink', f"{h['tot'] * 100:+.1f}% left" if h else 'no bids'
+    if p.get('added') == str(TODAY) or not p.get('prev_ask') or not p.get('ask') or p.get('fair') is None:
+        return None
+    then = econ(dict(p, ask=p['prev_ask'], fair=p['fair'] if p.get('prev_fair') is None else p['prev_fair']))
+    return edge_move(then['tot'], econ(p)['tot'])
+
+
+def edge_move(then, now):
+    """A pick's return to resolution then and now, as the Rec column's Bigger/Smaller/Same edge."""
+    if abs(now - then) < 0.001:
+        return 'Same edge', 'flat', ''
+    a, b = pct(then), pct(now)
+    if a == b:
+        a, b = f'{then * 100:+.1f}%', f'{now * 100:+.1f}%'
+    return ('Bigger edge', 'up', f'{a} → {b}') if now > then else ('Smaller edge', 'down', f'{a} → {b}')
+
+
 def book(token):
     k = get(f'{CLOB}/book?token_id={token}', tries=3)
     asks = sorted((float(x['price']), float(x['size'])) for x in k.get('asks') or [])
@@ -890,8 +924,9 @@ def cmd_build(a):
     for p, h in held:
         fair = f"{p['fair']:.3f}" if p.get('fair') is not None else '–'
         hvs = f"{h['tot'] * 100:+.1f}% ({h['ann'] * 100:+,.0f}%/yr)" if h else '–'
-        print(f"  held {p['held']['size']:>8,.0f} {p.get('outcome') or p['side']:4} bid {px(p.get('bid')):>5} fair {fair:<5} "
-              f"hold vs sell {hvs:>16}  {p['name']}")
+        rec = (advice(p) or ('–',))[0]
+        print(f"  held {p['held']['size']:>8,.0f} {p.get('outcome') or p['side']:4} bid {px(p.get('bid')):>5} "
+              f"ask {px(p.get('ask')):>5} fair {fair:<5} hold vs sell {hvs:>16} {rec:<6}  {p['name']}")
     for p in st['dropped']:
         print(f"  dropped: {p['name']}: {p['reason']}")
     for p in st['resolved']:
@@ -934,9 +969,25 @@ def smart_cell(p):
 
 
 def live_attrs(p):
-    """What the page's Refresh asks button needs to redo a row's math at a live price."""
+    """What the page's Refresh prices button needs to redo a row's math at live prices: the built bid and ask too,
+    which its "was" lines and the Rec column compare against."""
     fair = '' if p.get('fair') is None else p['fair']
-    return f'data-token="{esc(p["token"])}" data-fair="{fair}" data-end="{esc(p["end"])}" data-hold="{1 if p.get("hold") else 0}"'
+    nz = lambda x: '' if x is None else x
+    return (f'data-token="{esc(p["token"])}" data-fair="{fair}" data-end="{esc(p["end"])}" data-hold="{1 if p.get("hold") else 0}" '
+            f'data-held="{1 if p.get("held") else 0}" data-bid="{nz(p.get("bid"))}" data-ask="{nz(p.get("ask"))}"')
+
+
+def other_quote(name, x):
+    """The other side of the book under a row's price: "bid 0.86" under an ask, "ask 0.87" under a bid."""
+    return f'<div class="sub">{f"{name} {px(x)}" if x else f"no {name}s"}</div>'
+
+
+def rec_cell(p):
+    a = advice(p)
+    if not a:
+        return '<span class="faint">–</span>'
+    label, tone, sub = a
+    return f'<b class="{tone}">{label}</b>' + (f'<div class="sub">{esc(sub)}</div>' if sub else '')
 
 
 def row_html(i, p, e):
@@ -964,10 +1015,11 @@ def row_html(i, p, e):
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
     smart = smart_cell(p)
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr id="m{esc(p['id'])}" {live_attrs(p)} data-ask="{p['ask']}">
+    return f'''<tr id="m{esc(p['id'])}" {live_attrs(p)}>
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side}{badges}</div><p class="why">{esc(p['why'])}</p></td>
-  <td class="num" data-k="Ask"><b>{px(p['ask'])}</b>{move}</td>
+  <td class="rec" data-k="Rec">{rec_cell(p)}</td>
+  <td class="num" data-k="Ask"><b>{px(p['ask'])}</b>{other_quote('bid', p.get('bid'))}{move}</td>
   <td class="num" data-k="Fair"><b>{fv(p['fair'])}</b>{fair_ch}</td>
   <td class="num" data-k="Return"><b>{pct(e['tot'])}</b>{bonus}</td>
   <td class="num ret {tone}" data-k="Per yr"><b>{pct(e['ann'])}</b></td>
@@ -978,7 +1030,10 @@ def row_html(i, p, e):
 
 
 def table_html(rows):
-    head = ('<thead><tr><th class="n">#</th><th class="mkt">Market</th><th>Ask</th><th>Fair</th>'
+    head = ('<thead><tr><th class="n">#</th><th class="mkt">Market</th>'
+            '<th class="rec" title="Bigger or smaller edge: the return to resolution against the last run (after a refresh, '
+            'against the build). A pick you hold gets the positions\' call instead.">Rec</th>'
+            '<th title="Best ask for our side; under it the best bid">Ask</th><th>Fair</th>'
             '<th title="Fair ÷ ask − 1 held to resolution, plus the holding reward">Return</th>'
             '<th title="Return ÷ years to resolution; the list is ranked by it, after today\'s new picks">Per yr ▾</th>'
             '<th title="Share of smart-money dollars on our side">Smart $</th><th>Depth</th><th>Ends</th></tr></thead>')
@@ -1015,11 +1070,12 @@ def held_row_html(i, p, h):
         hvs = per_yr = edge = '<span class="faint">–</span>'
     why = f'<p class="why">{esc(p["why"])}</p>' if p.get('why') else ''
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-bid="{p.get('bid') or ''}">
+    return f'''<tr {live_attrs(p)} data-size="{d['size']}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
+  <td class="rec" data-k="Rec">{rec_cell(p)}</td>
   <td class="num" data-k="Held"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
-  <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{move}</td>
+  <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{other_quote('ask', p.get('ask'))}{move}</td>
   <td class="num" data-k="Fair">{fair}</td>
   <td class="num" data-k="Hold vs sell">{hvs}</td>
   <td class="num" data-k="Per yr">{per_yr}</td>
@@ -1030,7 +1086,10 @@ def held_row_html(i, p, h):
 
 
 def held_table_html(held):
-    head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th><th>Shares</th><th>Bid</th><th>Fair</th>'
+    head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>'
+            '<th class="rec" title="Sell: bid at or above fair. Reduce: under +3% or 10% a year left over selling. '
+            'Expand: buying more at the ask would make the main list. Keep: the rest.">Rec</th>'
+            '<th>Shares</th><th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>'
             '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th>'
             '<th title="Hold vs sell ÷ years to resolution">Per yr</th>'
             '<th title="Shares × (fair + reward − bid)">$ edge</th><th>Smart $</th><th>Ends</th></tr></thead>')
@@ -1076,9 +1135,10 @@ def render(st, main, extra, noask, held):
     tabs_html = ('<div class="bar"><nav class="tabs" aria-label="Sections">' + ''.join(
         f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>'
         f'<button type="button" class="refresh" id="refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
-        f'data-main="{MAIN_ANN}" data-built="{NOW:%H:%M}" title="Fetch the current order books from Polymarket and redo '
-        f'the returns at those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
-        f'<span class="lbl">Refresh asks</span><span class="when"></span></button></div>')
+        f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
+        f'title="Fetch the current order books from Polymarket and redo the bids, asks, returns and recommendations at '
+        f'those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
+        f'<span class="lbl">Refresh prices</span><span class="when"></span></button></div>')
     dropped = ''
     if st['dropped']:
         dropped = ('<section id="dropped"><h2>Dropped today</h2><ul class="plain">' + ''.join(
@@ -1090,7 +1150,8 @@ def render(st, main, extra, noask, held):
         noask_html = ('<section id="noask"><h2>No sellers today</h2><p class="note">Still in the book, but nobody is offering our side, '
                       'so there is no return to show.</p><ul class="plain">' + ''.join(
                           f'<li {live_attrs(p)}><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
-                          f'{p["fair"]:.2f}</span><span class="live"></span></li>' for p in noask) + '</ul></section>')
+                          f'{p["fair"]:.2f}{f", bid {px(p.get("bid"))}" if p.get("bid") else ""}</span><span class="live"></span></li>'
+                          for p in noask) + '</ul></section>')
     above = sum(1 for _, h in held if h and h['tot'] < 0)
     unvalued = sum(1 for p, _ in held if p.get('fair') is None)
     held_html = ''
@@ -1099,7 +1160,10 @@ def render(st, main, extra, noask, held):
                      'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling into the '
                      'best bid now: fair ÷ bid − 1, plus the holding reward where the market pays it. Red means the bid is above '
                      'my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares × (fair + reward − bid). '
-                     'Sorted by Per yr, lowest first.'
+                     '<b>Rec</b>: <b>Sell</b> when the bid is at or above fair; <b>Reduce</b> when what is left over selling '
+                     f'is under +{MIN_EDGE * 100:.0f}% or {MIN_ANN * 100:.0f}% a year, the bars a pick needs to stay in the book; '
+                     f'<b>Expand</b> when buying more at the ask would make the main list ({MAIN_ANN * 100:.0f}% a year); '
+                     '<b>Keep</b> otherwise. Sorted by Per yr, lowest first.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
     rest = len(main) - len(fresh)
@@ -1149,7 +1213,7 @@ def render(st, main, extra, noask, held):
 }}
 * {{ box-sizing: border-box; }}
 body {{ margin: 0; background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }}
-.wrap {{ max-width: 1240px; margin: 0 auto; padding: 40px 28px 64px; display: grid; gap: 28px; }}
+.wrap {{ max-width: 1360px; margin: 0 auto; padding: 40px 28px 64px; display: grid; gap: 28px; }}
 a {{ color: inherit; text-decoration: none; }}
 a:hover {{ color: var(--accent); }}
 a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }}
@@ -1231,12 +1295,12 @@ tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
 h2 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
 .table-box {{ background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }}
 table.hunt {{ width: 100%; border-collapse: collapse; }}
-th {{ text-align: right; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 12px 12px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }}
+th {{ text-align: right; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 12px 10px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }}
 th.mkt {{ text-align: left; }}
-td {{ padding: 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }}
+td {{ padding: 12px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }}
 tr:last-child td {{ border-bottom: 0; }}
 td.n, th.n {{ width: 36px; color: var(--faint); text-align: right; font-family: var(--mono); font-size: 12.5px; padding-right: 0; }}
-td.mkt {{ min-width: 300px; width: 42%; }}
+td.mkt {{ min-width: 260px; width: 42%; }}
 td.mkt a {{ font-weight: 600; line-height: 1.35; }}
 .meta {{ display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; }}
 .side, .apr, .tag, .new {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
@@ -1247,6 +1311,14 @@ td.mkt a {{ font-weight: 600; line-height: 1.35; }}
 .new {{ color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }}
 .held {{ color: var(--surface); background: var(--ink); }}
 b.flat {{ color: var(--muted); }}
+td.rec, th.rec {{ text-align: left; white-space: nowrap; }}
+td.rec b {{ display: inline-block; font-size: 12.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; line-height: 1.5;
+            color: var(--ink); background: var(--surface-2); }}
+td.rec b.up {{ color: var(--up); background: color-mix(in srgb, var(--up) 13%, transparent); }}
+td.rec b.down {{ color: var(--down); background: color-mix(in srgb, var(--down) 13%, transparent); }}
+td.rec b.warn {{ color: var(--warn-ink); background: var(--warn-bg); }}
+td.rec b.flat {{ color: var(--muted); background: none; padding-left: 0; }}
+.wrap > * {{ min-width: 0; }}  /* a wide table scrolls in its box instead of widening the page */
 .why {{ margin: 6px 0 0; font-size: 13px; color: var(--muted); max-width: 80ch; }}
 td.num {{ text-align: right; font-family: var(--mono); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }}
 td.num b {{ font-weight: 500; }}
@@ -1288,7 +1360,7 @@ footer p {{ margin: 0; }}
   td.n {{ display: none; }}
   td.mkt {{ grid-column: 1 / -1; min-width: 0; width: auto; }}
   td.num {{ text-align: left; white-space: normal; }}
-  td.num::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
+  td.num::before, td.rec::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
 }}
 @media print {{
   @page {{ size: A4 landscape; margin: 10mm; }}
@@ -1313,7 +1385,7 @@ footer p {{ margin: 0; }}
       geopolitics, ranked by annualized return: a small edge that pays out in weeks beats a big one that takes years.
       Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
     </div>
-    <div class="stamp"><span id="asks-at">Asks at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
+    <div class="stamp"><span id="asks-at">Prices at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
   </header>
   <section class="summary" aria-label="Summary">
     <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#main">{n_fast}</a></span><span class="s"><a href="#main">main list</a></span></div>
@@ -1330,9 +1402,12 @@ footer p {{ margin: 0; }}
   {noask_html}
   {dropped}
   <footer>
-    <p><b>Ask</b> is the best offer for our side now; "was" shows the last run's ask (green = cheaper today).
-    <b>Refresh asks</b> refetches every order book from Polymarket and redoes Ask, Bid, Return, Per yr and Depth at those
-    prices; "was" then shows the ask when the page was built. It does no research: fair values and the order stay as built. <b>Fair</b> is my
+    <p><b>Ask</b> is the best offer for our side now, with the best bid (what selling would fetch) under it; "was" shows
+    the last run's ask (green = cheaper today). <b>Rec</b> on a pick you don't hold says whether its edge (Return)
+    is bigger or smaller than at the last run; on a pick you hold it is the positions' call (Sell, Reduce, Keep, Expand).
+    <b>Refresh prices</b> refetches every order book from Polymarket and redoes Bid, Ask, Rec, Return, Per yr, Depth and
+    the positions' figures at those prices; "was" and Rec then compare with the prices when the page was built. It does no
+    research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
     a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
     ranked by it, except that today's new picks open the main list whatever their rate, slower ones included. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
@@ -1389,13 +1464,14 @@ footer p {{ margin: 0; }}
 '''
 
 
-# The Refresh asks button: live order books from Polymarket's CLOB (it allows any origin), the same math as econ() and
-# hold_econ(), written into the rows in place. Nothing is researched and nothing is saved.
+# The Refresh prices button: live order books from Polymarket's CLOB (it allows any origin), the same math as econ(),
+# hold_econ() and advice(), written into the rows in place. Nothing is researched and nothing is saved.
 REFRESH_JS = r"""
 (() => {
   const btn = document.getElementById('refresh');
   if (!btn) return;
   const APR = +btn.dataset.apr, MIN_DAYS = +btn.dataset.minDays, MAIN = +btn.dataset.main;
+  const MIN_ANN = +btn.dataset.minAnn, MIN_EDGE = +btn.dataset.minEdge;
   const px = x => x == null ? '–' : String(+x.toPrecision(3));
   const fv = x => x >= 0.95 || x <= 0.05 ? x.toFixed(3) : x.toFixed(2);
   const pct = x => (x < 0 ? '-' : '+') + Math.abs(Math.round(x * 100)).toLocaleString('en-US') + '%';
@@ -1426,16 +1502,47 @@ REFRESH_JS = r"""
     const depth = ask == null ? 0 : Math.round(asks.filter(([p]) => p <= ask + 0.02 + 1e-9).reduce((s, [p, z]) => s + p * z, 0));
     return { ask, bid: bids.length ? bids[0] : null, depth };
   };
-  const was = (now, then, better) => {
+  const was = (now, then, better) => {  // better(now, then) colours the line; null leaves it grey
     if (now == null || isNaN(then)) return '';
     if (Math.abs(now - then) < 1e-9) return '<div class="sub">unchanged</div>';
-    return `<div class="sub ${better(now, then) ? 'up' : 'down'}">was ${px(then)}</div>`;
+    return `<div class="sub${better ? (better(now, then) ? ' up' : ' down') : ''}">was ${px(then)}</div>`;
+  };
+  // a row's price, the other side of the book under it ("bid 0.86" under an ask), then its "was" line
+  const quoteCell = (tr, k, now, then, better, none, other, name) => put(cell(tr, k), `<b>${px(now)}</b>` +
+    `<div class="sub">${other ? `${name} ${px(other)}` : `no ${name}s`}</div>` +
+    (now == null ? `<div class="sub down">${none}</div>` : was(now, then, better)));
+  // The Rec column, as advice() in hunt.py: the positions' call for a held market, else the edge against the build.
+  const pct1 = x => (x < 0 ? '-' : '+') + Math.abs(x * 100).toFixed(1) + '%';
+  const holdCall = (bid, ask, fair, end, hold) => {
+    const h = bid ? holdEcon(bid, fair, end, hold, 0) : null, e = ask ? econ(ask, fair, end, hold) : null;
+    if (h && h.tot <= 0) return ['Sell', 'down', 'bid ≥ fair'];
+    if (h && (h.ann < MIN_ANN || h.tot < MIN_EDGE)) return ['Reduce', 'warn', h.ann < MIN_ANN ? `${pct(h.ann)}/yr left` : `${pct1(h.tot)} left`];
+    if (e && e.ann >= MAIN && e.tot >= MIN_EDGE) return ['Expand', 'up', `${pct(e.ann)}/yr at ask`];
+    return ['Keep', 'ink', h ? `${pct1(h.tot)} left` : 'no bids'];
+  };
+  const edgeCall = (then, now) => {
+    if (now == null) return ['No sellers', 'down', ''];
+    if (Math.abs(now - then) < 0.001) return ['Same edge', 'flat', ''];
+    let a = pct(then), b = pct(now);
+    if (a === b) { a = pct1(then); b = pct1(now); }
+    return [now > then ? 'Bigger edge' : 'Smaller edge', now > then ? 'up' : 'down', `${a} → ${b}`];
+  };
+  const putRec = (tr, call) => put(cell(tr, 'Rec'), call
+    ? `<b class="${call[1]}">${call[0]}</b>` + (call[2] ? `<div class="sub">${call[2]}</div>` : '')
+    : '<span class="faint">–</span>');
+  const rec = (tr, b) => {
+    const d = tr.dataset, fair = +d.fair, hold = d.hold === '1';
+    if (d.fair === '') return putRec(tr, null);
+    if (d.held === '1') return putRec(tr, holdCall(b.bid, b.ask, fair, d.end, hold));
+    const built = parseFloat(d.ask);
+    if (isNaN(built)) return putRec(tr, null);
+    putRec(tr, edgeCall(econ(built, fair, d.end, hold).tot, b.ask == null ? null : econ(b.ask, fair, d.end, hold).tot));
   };
   const pick = (tr, b) => {  // a main-list or slower row
     const fair = +tr.dataset.fair, hold = tr.dataset.hold === '1';
-    put(cell(tr, 'Ask'), `<b>${px(b.ask)}</b>` + (b.ask == null ? '<div class="sub down">no sellers now</div>'
-      : was(b.ask, +tr.dataset.ask, (n, t) => n < t)));
+    quoteCell(tr, 'Ask', b.ask, parseFloat(tr.dataset.ask), (n, t) => n < t, 'no sellers now', b.bid, 'bid');
     put(cell(tr, 'Depth'), '$' + b.depth.toLocaleString('en-US'));
+    rec(tr, b);
     const ret = cell(tr, 'Per yr');
     if (b.ask == null) {
       put(cell(tr, 'Return'), '<span class="faint">–</span>'); put(ret, '<b>–</b>'); ret.className = 'num ret r0'; return;
@@ -1446,7 +1553,8 @@ REFRESH_JS = r"""
     ret.className = 'num ret ' + (e.ann >= 1 ? 'r3' : e.ann >= 0.5 ? 'r2' : e.ann >= MAIN ? 'r1' : 'r0');
   };
   const held = (tr, b) => {  // an open position: what selling into the bid gives up
-    put(cell(tr, 'Bid'), `<b>${px(b.bid)}</b>` + was(b.bid, parseFloat(tr.dataset.bid), (n, t) => n > t));
+    quoteCell(tr, 'Bid', b.bid, parseFloat(tr.dataset.bid), (n, t) => n > t, 'no buyers now', b.ask, 'ask');
+    rec(tr, b);
     const dash = '<span class="faint">–</span>';
     if (tr.dataset.fair === '' || !b.bid) { ['Hold vs sell', 'Per yr', '$ edge'].forEach(k => put(cell(tr, k), dash)); return; }
     const h = holdEcon(b.bid, +tr.dataset.fair, tr.dataset.end, tr.dataset.hold === '1', +tr.dataset.size);
@@ -1458,9 +1566,10 @@ REFRESH_JS = r"""
   };
   const noSeller = (li, b) => {
     const out = li.querySelector('.live');
-    if (b.ask == null) { out.textContent = ' · still no sellers'; return; }
+    const bid = b.bid == null ? 'no bids' : `bid ${px(b.bid)}`;
+    if (b.ask == null) { out.textContent = ` · still no sellers (${bid})`; return; }
     const e = econ(b.ask, +li.dataset.fair, li.dataset.end, li.dataset.hold === '1');
-    out.textContent = ` · ask now ${px(b.ask)}, ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
+    out.textContent = ` · ask now ${px(b.ask)} (${bid}), ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
   };
   // The modal after a refresh: the prices that moved most since the reader last saw them (the build, then each refresh).
   const dlg = document.getElementById('moves'), seen = new Map(), TOP = 10;
@@ -1483,8 +1592,8 @@ REFRESH_JS = r"""
       const tone = m.good ? 'up' : 'down';
       const d = m.d == null ? (m.now == null ? 'gone' : 'new')
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
-      const sub = [m.side, m.kind === 'bid' ? 'your position, best bid' : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '']
-        .filter(Boolean).join(' · ');
+      const sub = [m.side, m.kind === 'bid' ? 'your position, best bid' : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '',
+                   m.rec].filter(Boolean).join(' · ');
       // the market on Polymarket, in a new tab so the refreshed prices stay on screen
       return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
              `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div>` +
@@ -1530,20 +1639,22 @@ REFRESH_JS = r"""
         const d = prev == null || now == null ? null : now - prev;
         if (d != null && Math.abs(d) < 5e-4) continue;
         const up = d == null ? now != null : d > 0;  // the quote rose, or one appeared
-        const a = el.querySelector('a'), side = el.querySelector('.side'), yr = el.tagName === 'TR' && cell(el, 'Per yr');
+        const a = el.querySelector('a'), side = el.querySelector('.side'), tr = el.tagName === 'TR';
+        const yr = tr && cell(el, 'Per yr'), call = tr && cell(el, 'Rec') && cell(el, 'Rec').querySelector('b');
         moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
                      fair: num(el.dataset.fair), href: a ? a.getAttribute('href') : '#',
-                     name: a ? a.textContent : '', side: side ? side.textContent : '', ann: yr ? yr.textContent.trim() : '' });
+                     name: a ? a.textContent : '', side: side ? side.textContent : '', ann: yr ? yr.textContent.trim() : '',
+                     rec: call ? call.textContent : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       showMoves(moves, by.size);
       sinceText = `the last refresh at ${t}`;
       when.textContent = t.slice(0, 5);
-      stamp.textContent = `Live asks at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books)`;
-      lbl.textContent = 'Refresh asks';
+      stamp.textContent = `Live prices at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books)`;
+      lbl.textContent = 'Refresh prices';
     } catch (err) {
       btn.classList.add('err'); lbl.textContent = 'Retry'; when.textContent = '';
-      stamp.textContent = `Couldn't refresh the asks: ${err.message}`;
+      stamp.textContent = `Couldn't refresh the prices: ${err.message}`;
     } finally {
       btn.disabled = false; btn.classList.remove('busy');
     }

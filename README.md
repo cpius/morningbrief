@@ -126,5 +126,14 @@ shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. wh
 selling into the bid now, and the $ edge (shares × (fair + reward − bid)). Held positions are never auto-dropped and
 leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
 
+Every row has a Rec column (`advice()`). A held market (in the positions table, or a held hunt pick) gets **Sell** when
+the bid is at or above fair plus the reward, **Reduce** when what is left over selling into the bid is under +3% or 10%
+a year (the bars a pick needs to stay in the book), **Expand** when buying more at the ask would make the main list, and
+**Keep** otherwise. Any other pick gets **Bigger/Smaller/Same edge**: its return to resolution against the last run.
+The page's **Refresh prices** button refetches every order book, updates both the best bid and the best ask on each
+row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
+edge then measured against the build. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
+`advice()`, so a rule change needs the same change there.
+
 Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved". The page prints well as
 A4 landscape (browser Print → PDF).
