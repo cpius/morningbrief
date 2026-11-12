@@ -630,6 +630,18 @@ NAV_JS = r"""<script>
   const hashed = links.findIndex(a => a.hash === location.hash);
   if (hashed >= 0) pinned = hashed;
   update();
+  // A link straight to a section (/#hunt-main, the old /hunt/ address) lands short: the browser scrolls to it before the
+  // P/L card draws its chart and notes, which push everything below down. Jump again once the page has settled
+  // (loaded, fonts in, two frames for the card's ResizeObserver), unless the reader has started scrolling.
+  const root = document.documentElement, smooth = () => root.classList.add('smooth');
+  const target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+  if (!target) return smooth();
+  let moved = false;
+  ['wheel', 'touchstart', 'keydown', 'pointerdown'].forEach(ev => addEventListener(ev, () => { moved = true; }, { once: true, passive: true }));
+  const loaded = document.readyState === 'complete' ? null : new Promise(r => addEventListener('load', r, { once: true }));
+  Promise.all([loaded, document.fonts && document.fonts.ready])
+    .then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+    .then(() => { if (!moved) target.scrollIntoView(); smooth(); });
 })();
 </script>"""
 
@@ -672,7 +684,8 @@ page = f'''<title>Nothing Ever Happens Book</title>
 * {{ box-sizing: border-box; }}
 body {{ background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }}
 .wrap {{ max-width: 1360px; margin: 0 auto; padding: 40px 28px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }}
-@media (prefers-reduced-motion: no-preference) {{ html {{ scroll-behavior: smooth; }} }}
+/* tabs and in-page links scroll smoothly; NAV_JS turns it on once a link straight to a section has landed */
+@media (prefers-reduced-motion: no-preference) {{ html.smooth {{ scroll-behavior: smooth; }} }}
 a {{ color: inherit; text-decoration: none; }}
 a:hover {{ color: var(--accent); }}
 a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }}
