@@ -617,8 +617,7 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 .up {{ color: var(--up); }} .down {{ color: var(--down); }} .flat {{ color: var(--muted); }}
 
 header {{ display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px 32px; }}
-.eyebrow {{ font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
-h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 42px); line-height: 1.05; letter-spacing: -.02em; margin: 6px 0 0; text-wrap: balance; }}
+h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 42px); line-height: 1.05; letter-spacing: -.02em; margin: 0; text-wrap: balance; }}
 .stamp {{ font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; line-height: 1.6; }}
 
 .summary {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
@@ -712,11 +711,10 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
 <div class="wrap">
   <header>
     <div>
-      <div class="eyebrow">Polymarket positions · mdorup</div>
       <h1>Nothing Ever Happens Book</h1>
       <!--BRIEF-->
     </div>
-    <div class="stamp">Snapshot {fmt_date(SNAP)}, {SNAP:%H:%M}<br>24h window from {WIN.day} {WIN:%b}, {WIN:%H:%M}<br>0x9d4A…5887</div>
+    <div class="stamp">{fmt_date(SNAP)}, {SNAP:%H:%M}</div>
   </header>
 
   <section class="summary" aria-label="Portfolio summary">
