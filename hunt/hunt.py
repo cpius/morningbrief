@@ -197,19 +197,25 @@ def advice(p):
 
     A held position: Sell when the bid is at or above fair (plus the reward); Reduce when what is left to earn over
     selling into the bid would not keep a pick in the book (under +3% to resolution or 10% a year); Expand when buying
-    more at the ask would make the main list; else Keep. Any other pick: whether its edge (return to resolution) grew or
+    more at the ask would make the main list; else Keep. When the position's edge (hold vs sell) moved since the last run,
+    the call says so first: "Smaller edge, expand". Any other pick: whether its edge (return to resolution) grew or
     shrank since the last run. The page's Refresh prices button redoes this in JavaScript (REFRESH_JS)."""
     if p.get('held'):
         if p.get('fair') is None:
             return None
         h, e = hold_econ(p), econ(p)
         if h and h['tot'] <= 0:
-            return 'Sell', 'down', 'bid ≥ fair'
-        if h and weak(h):
-            return 'Reduce', 'warn', f"{pct(h['ann'])}/yr left" if h['ann'] < MIN_ANN else f"{h['tot'] * 100:+.1f}% left"
-        if e and e['ann'] >= MAIN_ANN and e['tot'] >= MIN_EDGE:
-            return 'Expand', 'up', f"{pct(e['ann'])}/yr at ask"
-        return 'Keep', 'ink', f"{h['tot'] * 100:+.1f}% left" if h else 'no bids'
+            label, tone, sub = 'Sell', 'down', 'bid ≥ fair'
+        elif h and weak(h):
+            label, tone, sub = 'Reduce', 'warn', f"{pct(h['ann'])}/yr left" if h['ann'] < MIN_ANN else f"{h['tot'] * 100:+.1f}% left"
+        elif e and e['ann'] >= MAIN_ANN and e['tot'] >= MIN_EDGE:
+            label, tone, sub = 'Expand', 'up', f"{pct(e['ann'])}/yr at ask"
+        else:
+            label, tone, sub = 'Keep', 'ink', f"{h['tot'] * 100:+.1f}% left" if h else 'no bids'
+        then = h and p.get('prev_bid') and hold_econ(dict(p, bid=p['prev_bid'], fair=p['fair'] if p.get('prev_fair') is None else p['prev_fair']))
+        if then and abs(h['tot'] - then['tot']) >= 0.001:
+            label = f"{'Bigger' if h['tot'] > then['tot'] else 'Smaller'} edge, {label.lower()}"
+        return label, tone, sub
     if p.get('added') == str(TODAY) or not p.get('prev_ask') or not p.get('ask') or p.get('fair') is None:
         return None
     then = econ(dict(p, ask=p['prev_ask'], fair=p['fair'] if p.get('prev_fair') is None else p['prev_fair']))
@@ -1090,7 +1096,8 @@ def held_row_html(i, p, h):
 def held_table_html(held):
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>'
             '<th class="rec" title="Sell: bid at or above fair. Reduce: under +3% or 10% a year left over selling. '
-            'Expand: buying more at the ask would make the main list. Keep: the rest.">Rec</th>'
+            'Expand: buying more at the ask would make the main list. Keep: the rest. Bigger or smaller edge first when '
+            'hold vs sell moved since the last run (after a refresh, since the build).">Rec</th>'
             '<th>Shares</th><th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>'
             '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th>'
             '<th title="Hold vs sell ÷ years to resolution">Per yr</th>'
@@ -1139,8 +1146,9 @@ def render(st, main, extra, noask, held):
         f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>'
         f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
-        f'title="Fetch the current order books from Polymarket and redo the bids, asks, returns and recommendations at '
-        f'those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
+        f'data-wallet="{WALLET}" '
+        f'title="Fetch the current order books and your positions from Polymarket and redo the bids, asks, returns and '
+        f'recommendations at those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
         f'<span class="lbl">Refresh prices</span><span class="when"></span></button></div>')
     dropped = ''
     if st['dropped']:
@@ -1303,7 +1311,7 @@ def render(st, main, extra, noask, held):
   td.num b {{ font-weight: 500; }}
   td.ret b {{ font-weight: 600; }}
   td.r3 b {{ color: var(--up); }} td.r2 b {{ color: color-mix(in srgb, var(--up) 75%, var(--ink)); }} td.r0 b {{ color: var(--muted); }}
-  .sub {{ font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: inherit; }}
+  .sub {{ font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: inherit; font-variant-numeric: inherit; }}
   .sub.up {{ color: var(--up); }} .sub.down {{ color: var(--down); }} .sub.gold {{ color: var(--gold); }}
   .note {{ color: var(--muted); font-size: 13.5px; margin: 0 0 8px; max-width: 90ch; }}
   ul.plain {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }}
@@ -1337,6 +1345,7 @@ def render(st, main, extra, noask, held):
     table.hunt td {{ padding: 0; border: 0; }}
     td.n {{ display: none; }}
     td.mkt {{ grid-column: 1 / -1; min-width: 0; width: auto; }}
+    td.rec {{ grid-column: span 2; }}  /* room for "Smaller edge, expand" */
     td.num {{ text-align: left; white-space: normal; }}
     td.num::before, td.rec::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
   }}
@@ -1383,9 +1392,11 @@ def render(st, main, extra, noask, held):
   <footer>
     <p><b>Ask</b> is the best offer for our side now, with the best bid (what selling would fetch) under it; "was" shows
     the last run's ask (green = cheaper today). <b>Rec</b> on a pick you don't hold says whether its edge (Return)
-    is bigger or smaller than at the last run; on a pick you hold it is the positions' call (Sell, Reduce, Keep, Expand).
-    <b>Refresh prices</b> refetches every order book from Polymarket and redoes Bid, Ask, Rec, Return, Per yr, Depth and
-    the positions' figures at those prices; "was" and Rec then compare with the prices when the page was built. It does no
+    is bigger or smaller than at the last run; on a pick you hold it is the positions' call (Sell, Reduce, Keep, Expand),
+    led by whether the position's edge grew or shrank ("Smaller edge, expand").
+    <b>Refresh prices</b> refetches every order book from Polymarket, and the wallet's positions, and redoes Bid, Ask, Rec,
+    Return, Per yr, Depth and the positions' figures at those prices: a pick bought since the build gets the Held badge and
+    the positions' call, one sold loses them. "Was" and Rec then compare with the prices when the page was built. It does no
     research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
     a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
@@ -1504,12 +1515,15 @@ REFRESH_JS = r"""
     (now == null ? `<div class="sub down">${none}</div>` : was(now, then, better)));
   // The Rec column, as advice() in hunt.py: the positions' call for a held market, else the edge against the build.
   const pct1 = x => (x < 0 ? '-' : '+') + Math.abs(x * 100).toFixed(1) + '%';
-  const holdCall = (bid, ask, fair, end, hold) => {
+  const holdCall = (bid, ask, fair, end, hold, built) => {  // built: the bid when the page was built, for the edge move
     const h = bid ? holdEcon(bid, fair, end, hold, 0) : null, e = ask ? econ(ask, fair, end, hold) : null;
-    if (h && h.tot <= 0) return ['Sell', 'down', 'bid ≥ fair'];
-    if (h && (h.ann < MIN_ANN || h.tot < MIN_EDGE)) return ['Reduce', 'warn', h.ann < MIN_ANN ? `${pct(h.ann)}/yr left` : `${pct1(h.tot)} left`];
-    if (e && e.ann >= MAIN && e.tot >= MIN_EDGE) return ['Expand', 'up', `${pct(e.ann)}/yr at ask`];
-    return ['Keep', 'ink', h ? `${pct1(h.tot)} left` : 'no bids'];
+    const c = h && h.tot <= 0 ? ['Sell', 'down', 'bid ≥ fair']
+      : h && (h.ann < MIN_ANN || h.tot < MIN_EDGE) ? ['Reduce', 'warn', h.ann < MIN_ANN ? `${pct(h.ann)}/yr left` : `${pct1(h.tot)} left`]
+      : e && e.ann >= MAIN && e.tot >= MIN_EDGE ? ['Expand', 'up', `${pct(e.ann)}/yr at ask`]
+      : ['Keep', 'ink', h ? `${pct1(h.tot)} left` : 'no bids'];
+    const then = h && built ? holdEcon(built, fair, end, hold, 0) : null;
+    if (then && Math.abs(h.tot - then.tot) >= 0.001) c[0] = `${h.tot > then.tot ? 'Bigger' : 'Smaller'} edge, ${c[0].toLowerCase()}`;
+    return c;
   };
   const edgeCall = (then, now) => {
     if (now == null) return ['No sellers', 'down', ''];
@@ -1524,7 +1538,7 @@ REFRESH_JS = r"""
   const rec = (tr, b) => {
     const d = tr.dataset, fair = +d.fair, hold = d.hold === '1';
     if (d.fair === '') return putRec(tr, null);
-    if (d.held === '1') return putRec(tr, holdCall(b.bid, b.ask, fair, d.end, hold));
+    if (d.held === '1') return putRec(tr, holdCall(b.bid, b.ask, fair, d.end, hold, parseFloat(d.bid)));
     const built = parseFloat(d.ask);
     if (isNaN(built)) return putRec(tr, null);
     putRec(tr, edgeCall(econ(built, fair, d.end, hold).tot, b.ask == null ? null : econ(b.ask, fair, d.end, hold).tot));
@@ -1553,7 +1567,37 @@ REFRESH_JS = r"""
     put(cell(tr, 'Hold vs sell'), `<b class="${tone}">${h.tot < 0 ? '-' : '+'}${Math.abs(h.tot * 100).toFixed(1)}%</b>` +
       (tr.dataset.hold === '1' ? `<div class="sub gold">incl. +${(h.bonus * 100).toFixed(1)}% reward</div>` : ''));
     put(cell(tr, 'Per yr'), `<b class="${tone}">${pct(h.ann)}</b>`);
-    put(cell(tr, '$ edge'), `<b class="${tone}">${h.edge >= 0 ? '+' : '−'}${usd(h.edge)}</b><div class="sub">on ${usd(h.value)}</div>`);
+    put(cell(tr, '$ edge'), +tr.dataset.size ? `<b class="${tone}">${h.edge >= 0 ? '+' : '−'}${usd(h.edge)}</b><div class="sub">on ${usd(h.value)}</div>` : dash);
+  };
+  // The wallet's open positions now (token → shares and average price), or null when Polymarket doesn't answer.
+  // The same filter as sync_positions() in hunt.py: not yet redeemable, priced strictly between 0 and 1.
+  const positions = async () => {
+    if (!btn.dataset.wallet) return null;
+    try {
+      const r = await fetch(`https://data-api.polymarket.com/v2/positions?user=${btn.dataset.wallet}&limit=500&filter_amount=0.1`);
+      if (!r.ok) return null;
+      return new Map(((await r.json()).data || []).filter(x => !x.redeemable && +x.current_price > 0 && +x.current_price < 1)
+        .map(x => [x.token_id, { size: Math.round(x.current_size * 100) / 100, avg: +x.avg_price }]));
+    } catch (err) {
+      return null;
+    }
+  };
+  const markHeld = (tr, p) => {  // a row as the wallet holds it now: the Held badge on a pick, the shares on a position
+    tr.dataset.held = p ? '1' : '0';
+    if (tr.dataset.size) {
+      tr.dataset.size = p ? p.size : 0;
+      put(cell(tr, 'Held'), p ? `<b>${Math.round(p.size).toLocaleString('en-US')}</b><div class="sub">@ ${p.avg.toFixed(3)}</div>`
+                              : '<b>0</b><div class="sub down">sold</div>');
+      return;
+    }
+    const meta = tr.querySelector('.meta'), badge = meta && meta.querySelector('.held');
+    if (!p && badge) badge.remove();
+    if (p && meta && !badge) {
+      const b = document.createElement('span');
+      b.className = 'held'; b.textContent = 'Held';
+      const at = meta.querySelector('.apr') || meta.querySelector('.side');
+      if (at) at.after(b); else meta.prepend(b);
+    }
   };
   const noSeller = (li, b) => {
     const out = li.querySelector('.live');
@@ -1567,9 +1611,9 @@ REFRESH_JS = r"""
   let sinceText = `the page was built at ${btn.dataset.built}`;
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const num = s => s === '' || s == null || isNaN(+s) ? null : +s;
-  const quote = el => {  // which price a row tracks, and what it showed before this refresh
-    const kind = el.dataset.size ? 'bid' : 'ask';
-    const prev = seen.has(el) ? seen.get(el) : el.tagName === 'LI' ? null : num(kind === 'bid' ? el.dataset.bid : el.dataset.ask);
+  const quote = el => {  // which price a row tracks (the bid on anything you hold), and what it showed before this refresh
+    const kind = el.tagName === 'TR' && el.dataset.held === '1' ? 'bid' : 'ask';
+    const prev = seen.has(el) ? seen.get(el)[kind] : el.tagName === 'LI' ? null : num(el.dataset[kind]);
     return { kind, prev };
   };
   const showMoves = (moves, total) => {
@@ -1612,36 +1656,41 @@ REFRESH_JS = r"""
     try {
       const chunks = [];
       for (let i = 0; i < tokens.length; i += 100) chunks.push(tokens.slice(i, i + 100));
-      const books = (await Promise.all(chunks.map(async c => {
+      const [books, pos] = await Promise.all([Promise.all(chunks.map(async c => {
         const r = await fetch('https://clob.polymarket.com/books', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                                                     body: JSON.stringify(c.map(t => ({ token_id: t }))) });
         if (!r.ok) throw new Error(`Polymarket answered ${r.status}`);
         return r.json();
-      }))).flat();
+      })).then(x => x.flat()), positions()]);
       const by = new Map(books.map(b => [b.asset_id, top(b)]));
       const moves = [];
       for (const el of rows) {
+        if (pos && el.tagName === 'TR') markHeld(el, pos.get(el.dataset.token));  // bought or sold since the build
         const b = by.get(el.dataset.token);
         if (!b) continue;
         const { kind, prev } = quote(el), now = b[kind] || null;
         if (el.tagName === 'LI') noSeller(el, b); else if (el.dataset.size) held(el, b); else pick(el, b);
-        seen.set(el, now);
+        seen.set(el, { ask: b.ask || null, bid: b.bid || null });
         if (prev == null && now == null) continue;
         const d = prev == null || now == null ? null : now - prev;
         if (d != null && Math.abs(d) < 5e-4) continue;
         const up = d == null ? now != null : d > 0;  // the quote rose, or one appeared
         const a = el.querySelector('a'), side = el.querySelector('.side'), tr = el.tagName === 'TR';
-        const yr = tr && cell(el, 'Per yr'), call = tr && cell(el, 'Rec') && cell(el, 'Rec').querySelector('b');
+        const call = tr && cell(el, 'Rec') && cell(el, 'Rec').querySelector('b');
+        const fair = num(el.dataset.fair), end = el.dataset.end, hold = el.dataset.hold === '1';
+        const ann = fair == null || now == null ? '' : pct(kind === 'bid' ? holdEcon(now, fair, end, hold, 0).ann : econ(now, fair, end, hold).ann);
         moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
-                     fair: num(el.dataset.fair), href: a ? a.getAttribute('href') : '#',
-                     name: a ? a.textContent : '', side: side ? side.textContent : '', ann: yr ? yr.textContent.trim() : '',
+                     fair, href: a ? a.getAttribute('href') : '#',
+                     name: a ? a.textContent : '', side: side ? side.textContent : '', ann,
                      rec: call ? call.textContent : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       showMoves(moves, by.size);
       sinceText = `the last refresh at ${t}`;
       when.textContent = t.slice(0, 5);
-      stamp.textContent = `Live prices at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books)`;
+      const known = new Set(tokens), outside = pos ? [...pos.keys()].filter(k => !known.has(k)).length : 0;
+      const posNote = !pos ? 'positions unavailable' : `${pos.size} positions` + (outside ? `, ${outside} not in the hunt until the next build` : '');
+      stamp.textContent = `Live prices at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books, ${posNote})`;
       lbl.textContent = 'Refresh prices';
     } catch (err) {
       btn.classList.add('err'); lbl.textContent = 'Retry'; when.textContent = '';
