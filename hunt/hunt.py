@@ -52,7 +52,8 @@ SEED = os.path.join(HERE, 'seed.json')
 SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
 UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull
 SITE = os.path.join(ROOT, 'site', 'hunt')
-SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page
+SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page ...
+NAV = os.path.join(WORK, 'nav.json')  # ... and the hunt's tabs and Refresh prices button in the page's top menu
 LIVE = 'https://nothing-ever-happens-book.vercel.app/hunt/'
 GAMMA, CLOB, DATA = 'https://gamma-api.polymarket.com', 'https://clob.polymarket.com', 'https://data-api.polymarket.com'
 UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'}
@@ -897,8 +898,10 @@ def cmd_build(a):
 
     os.makedirs(SITE, exist_ok=True)
     os.makedirs(WORK, exist_ok=True)
+    section, nav = render(st, main, extra, noask, held)
     with open(SECTION, 'w') as fh:
-        fh.write(render(st, main, extra, noask, held))
+        fh.write(section)
+    write(NAV, nav)
     with open(os.path.join(SITE, 'index.html'), 'w') as fh:  # /hunt/ now only forwards to the brief's section
         fh.write(REDIRECT)
     write(STATE, st)
@@ -1107,7 +1110,8 @@ def held_table_html(held):
 
 
 def render(st, main, extra, noask, held):
-    """The brief's Mispricing hunt section: markup, styles and scripts, all scoped to #hunt. refresh.py includes it."""
+    """The brief's Mispricing hunt section (markup, styles and scripts, all scoped to #hunt) and its part of the page's top
+    menu (tabs and the Refresh prices button). refresh.py puts both on the page."""
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
     n_fast, n_slow = len(main), len(extra)  # by rate, for the summary stats
@@ -1127,14 +1131,14 @@ def render(st, main, extra, noask, held):
             f'{" (held)" if p.get("held") else ""}</li>' for p in st['resolved']) +
             '</ul></div>')
     boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
-    # the tab bar: one tab per part of the hunt section, in page order, with its count
-    tabs = [('Overview', 'hunt', None)]
+    # the hunt's tabs in the page's top menu: one per part of the section, in page order, with its count
+    tabs = [('Hunt', 'hunt', None)]
     if st['notes']:
         tabs.append(('What changed', 'hunt-changes', None))
     if st['resolved']:
         tabs.append(('Resolved', 'hunt-resolved', len(st['resolved'])))
     if held:
-        tabs.append(('Positions', 'hunt-positions', len(held)))
+        tabs.append(('Hold vs sell', 'hunt-positions', len(held)))
     tabs.append(('Main list', 'hunt-main', len(main)))
     if extra:
         tabs.append(('Slower', 'hunt-slower', len(extra)))
@@ -1142,14 +1146,13 @@ def render(st, main, extra, noask, held):
         tabs.append(('No sellers', 'hunt-noask', len(noask)))
     if st['dropped']:
         tabs.append(('Dropped', 'hunt-dropped', len(st['dropped'])))
-    tabs_html = ('<div class="bar"><nav class="tabs" aria-label="Hunt sections">' + ''.join(
-        f'<a href="#{t}">{label}{f"<span>{n}</span>" if n is not None else ""}</a>' for label, t, n in tabs) + '</nav>'
-        f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
+    button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'data-wallet="{WALLET}" '
         f'title="Fetch the current order books and your positions from Polymarket and redo the bids, asks, returns and '
         f'recommendations at those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
-        f'<span class="lbl">Refresh prices</span><span class="when"></span></button></div>')
+        f'<span class="lbl">Refresh prices</span><span class="when"></span></button>')
+    nav = dict(day=str(TODAY), tabs=tabs, button=button)
     dropped = ''
     if st['dropped']:
         dropped = ('<section id="hunt-dropped"><h3>Dropped today</h3><ul class="plain">' + ''.join(
@@ -1196,7 +1199,7 @@ def render(st, main, extra, noask, held):
 /* The brief's Mispricing hunt section. Every rule is nested under #hunt so none reaches the rest of the brief. */
 #hunt {{
   --gold: #8F6200; --gold-bg: #FFF4D1; --gold-line: #E9C46A;
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; min-width: 0; scroll-margin-top: 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; min-width: 0; scroll-margin-top: 64px;
   /* the brief's own table, list and cell rules reach in here: undo what the hunt doesn't set itself */
   table.hunt {{ min-width: 0; }}
   tbody tr:hover td {{ background: none; }}
@@ -1223,21 +1226,8 @@ def render(st, main, extra, noask, held):
   .stat .s {{ font-size: 12.5px; color: var(--muted); }}
   section, tr, .box {{ scroll-margin-top: 64px; }}
   section > h3 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
-  .bar {{ position: sticky; top: 0; z-index: 10; display: flex; align-items: stretch; gap: 10px; margin: 0 -28px; padding: 0 16px; min-width: 0;
-          background: var(--ground); box-shadow: inset 0 -1px var(--rule); }}
-  .tabs {{ flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }}
-  .refresh {{ flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
-              font: 600 13px var(--body); color: var(--accent); background: var(--surface); cursor: pointer;
-              border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; }}
-  .refresh:hover {{ background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }}
-  .refresh:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
-  .refresh:disabled {{ cursor: progress; opacity: .7; }}
-  .refresh .when {{ font-family: var(--mono); font-weight: 500; font-size: 12px; color: var(--muted); }}
-  .refresh .when:empty {{ display: none; }}
-  .refresh.busy span[aria-hidden] {{ animation: hunt-spin 1s linear infinite; }}
-  .refresh.err {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }}
   td.flash {{ animation: hunt-flash 2.5s ease-out; }}
-  @media (prefers-reduced-motion: reduce) {{ td.flash, .refresh.busy span[aria-hidden] {{ animation: none; }} }}
+  @media (prefers-reduced-motion: reduce) {{ td.flash {{ animation: none; }} }}
   .live {{ color: var(--muted); font-size: 13px; }}
   dialog.moves {{ width: min(680px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; color: var(--ink); background: var(--surface);
                   border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 24px 64px rgb(0 0 0 / .3); }}
@@ -1262,14 +1252,6 @@ def render(st, main, extra, noask, held):
   .moves-empty {{ margin: 0; padding: 20px; color: var(--muted); }}
   .moves-foot {{ margin: 0; padding: 10px 20px 14px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); }}
   .moves-foot:empty {{ display: none; }}
-  .tabs::-webkit-scrollbar {{ display: none; }}
-  .tabs a {{ flex: none; display: flex; align-items: center; gap: 7px; padding: 12px 12px 10px;
-             font-size: 13.5px; font-weight: 600; color: var(--muted); white-space: nowrap; border-bottom: 2px solid transparent; }}
-  .tabs a:hover {{ color: var(--ink); }}
-  .tabs a[aria-current] {{ color: var(--ink); border-bottom-color: var(--accent); }}
-  .tabs a span {{ font-family: var(--mono); font-size: 11.5px; font-weight: 500; padding: 0 6px; border-radius: 999px;
-                  background: var(--surface-2); color: var(--muted); }}
-  .tabs a[aria-current] span {{ background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }}
   tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
   .stat.goldk {{ background: var(--gold-bg); padding-left: 20px; }}
   .stat.goldk .v {{ color: var(--gold); }}
@@ -1321,9 +1303,6 @@ def render(st, main, extra, noask, held):
   footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: grid; gap: 6px; }}
   footer p {{ margin: 0; }}
   @media (max-width: 720px) {{
-    .bar {{ padding: 0 4px; gap: 4px; }}
-    .refresh {{ padding: 5px 10px; margin-right: 8px; }}
-    .refresh .lbl {{ display: none; }}
     .hunt-stamp {{ text-align: left; }}
     .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
@@ -1350,7 +1329,6 @@ def render(st, main, extra, noask, held):
     td.num::before, td.rec::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
   }}
   @media print {{
-    .bar {{ display: none; }}
     td {{ padding: 5px 6px; }} th {{ padding: 6px; }}
     td.mkt {{ min-width: 0; }}
     tr {{ break-inside: avoid; }}
@@ -1361,7 +1339,6 @@ def render(st, main, extra, noask, held):
   :root:not([data-theme="light"]) #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 }}
 :root[data-theme="dark"] #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
-@media (prefers-reduced-motion: no-preference) {{ html {{ scroll-behavior: smooth; }} }}
 @keyframes hunt-spin {{ to {{ transform: rotate(360deg); }} }}
 @keyframes hunt-flash {{ from {{ background: color-mix(in srgb, var(--accent) 22%, transparent); }} to {{ background: transparent; }} }}
 </style>
@@ -1382,7 +1359,6 @@ def render(st, main, extra, noask, held):
     <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#hunt-positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
     <div class="stat"><span class="k">Changes today</span>{changes}</div>
   </div>
-  {tabs_html}
   {boxes_html}
   {held_html}
   <section id="hunt-main"><h3>{main_h2}</h3>{main_html}</section>
@@ -1418,37 +1394,9 @@ def render(st, main, extra, noask, held):
   </dialog>
 </section>
 <script>
-// Light up the tab of the hunt part being read. A clicked tab stays lit until the reader scrolls themselves.
-(() => {{
-  const nav = document.querySelector('#hunt .tabs');
-  if (!nav) return;
-  const links = [...nav.querySelectorAll('a')];
-  const targets = links.map(a => document.getElementById(a.hash.slice(1)));
-  let pinned = null, queued = false;
-  const light = i => {{
-    links.forEach((a, j) => j === i ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'));
-    const a = links[i], l = a.offsetLeft, r = l + a.offsetWidth;  // keep the lit tab in view on a narrow screen
-    if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = l - 8;
-  }};
-  const update = () => {{
-    queued = false;
-    if (pinned !== null) return light(pinned);
-    const line = nav.getBoundingClientRect().bottom + 32;
-    let i = 0;
-    targets.forEach((t, j) => {{ if (t && t.getBoundingClientRect().top <= line) i = j; }});
-    if (nav.getBoundingClientRect().top > 1) i = 0;  // the bar hasn't stuck yet: still on the overview
-    light(i);
-  }};
-  links.forEach((a, j) => a.addEventListener('click', () => {{ pinned = j; light(j); }}));
-  ['wheel', 'touchstart', 'keydown'].forEach(ev => addEventListener(ev, () => {{ pinned = null; }}, {{ passive: true }}));
-  addEventListener('scroll', () => {{ if (!queued) {{ queued = true; requestAnimationFrame(update); }} }}, {{ passive: true }});
-  const hashed = links.findIndex(a => a.hash === location.hash);
-  if (hashed >= 0) pinned = hashed;
-  update();
-}})();
 {REFRESH_JS}
 </script>
-'''
+''', nav
 
 
 # /hunt/ was a page of its own until 12 Nov 2026. Links to it (bookmarks, old summaries) now land on the brief's
