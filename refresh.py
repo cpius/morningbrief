@@ -20,7 +20,7 @@ RESEARCH = os.path.join(HERE, 'research.json')  # "why it moved" notes, keyed by
 MAX_MOVE = 3.0  # cents; full width of the 24h bar
 SIG_MOVE = 2.0  # cents; a position needs research when its price moves this much ...
 SIG_USD = 10.0  # ... or its 24h $ change is at least this
-TRADE_DAYS = 7  # the trades list covers fills from this many days
+TRADE_DAYS = 7  # `trade:` lines in the output (for the routine's summary) cover fills from this many days
 UA = {'User-Agent': 'Mozilla/5.0'}
 
 
@@ -224,7 +224,8 @@ closed_d24 = sum(r['d24'] for r in closed) + sum(r['d24'] for r in resolved)
 d24_all = tot_d24 + closed_d24
 redeem_value = sum(r['value'] for r in resolved)
 
-HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build
+HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build ...
+HUNT_SECTION = os.path.join(HERE, 'hunt', 'work', 'section.html')  # ... with the page's Mispricing hunt section
 
 
 def load_hunt():
@@ -249,10 +250,10 @@ def fair_chip(r):
     if not v or v.get('fair') is None:
         return ''
     if v.get('tot') is None:
-        return f'<a class="fair" href="hunt/#positions">fair {cents(v["fair"])}</a>'
+        return f'<a class="fair" href="#hunt-positions">fair {cents(v["fair"])}</a>'
     t = v['tot']
     tone_cls = 'down' if t < 0 else 'up' if t >= 0.02 else ''
-    return f'<a class="fair {tone_cls}" href="hunt/#positions">fair {cents(v["fair"])} · hold vs sell {t * 100:+.1f}%</a>'
+    return f'<a class="fair {tone_cls}" href="#hunt-positions">fair {cents(v["fair"])} · hold vs sell {t * 100:+.1f}%</a>'
 
 
 trs = []
@@ -465,33 +466,19 @@ def weather_section():
 
 
 def hunt_section():
-    """Teaser for the mispricing hunt page, if hunt/hunt.py rebuilt it today."""
+    """The Mispricing hunt section (its own styles and scripts, all scoped to #hunt), if hunt/hunt.py built it today."""
     if not hunt:
         return ''
+    try:
+        with open(HUNT_SECTION) as fh:
+            section = fh.read()
+    except OSError:
+        print('  hunt: no hunt/work/section.html, hunt section left out')
+        return ''
     h = hunt
-    items = ''.join(
-        f'<li><a class="li-title" href="{html.escape(t["url"])}">{html.escape(t["name"])}</a>'
-        f'<span class="li-body">{t["side"]} at <b>{t["ask"]:.3g}</b>, fair {t["fair"]:.2f}, '
-        f'<b class="up">{t["ann"] * 100:+,.0f}% a year</b> ({t["tot"] * 100:+.0f}% by {t["end"]}'
-        f'{" incl. the 3.25% APR reward" if t["hold"] else ""})</span></li>'
-        for t in h['top'])
-    resolved = ''.join(f'<li><span class="li-title">{html.escape(r["name"])}</span><span class="li-body">Resolved: our '
-                       f'{r["side"]} {"won" if r["won"] else "lost"}</span></li>' for r in h.get('resolved', []))
-    held = ''
-    if h.get('held'):
-        above = h.get('held_above') or []
-        held = (f'<p class="wx-note">Your {h["held"]} open positions are on the hunt page too, each with a fair value and '
-                f'"hold vs sell" (fair ÷ bid − 1). '
-                + (f'The bid is above my fair value on {len(above)}: {html.escape(", ".join(above))}. ' if above else
-                   'None has a bid above my fair value. ')
-                + (f'{h["held_unvalued"]} not valued yet. ' if h.get('held_unvalued') else '')
-                + '<a class="more" href="hunt/#positions">Your positions →</a></p>')
     print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped; "
           f"{h.get('held', 0)} positions, {len(h.get('held_above') or [])} with the bid above fair")
-    return (f'<section class="hunt-teaser"><h2>Mispricing hunt</h2>{held}'
-            f'<p class="wx-note">{h["main"]} picks returning at least 30% a year, {h["hold"]} of them earning the 3.25% APR '
-            f'holding reward; {h["new"]} new and {h["dropped"]} dropped today. Top five by annualized return:</p>'
-            f'<ul>{resolved}{items}</ul><p class="wx-note"><a class="more" href="hunt/">Open the full list →</a></p></section>')
+    return section
 
 
 def recent_trades():
@@ -518,37 +505,14 @@ def recent_trades():
     return out
 
 
-def trades_section(trades):
-    if not trades:
-        return ''
+def print_trades(trades):
+    """`trade:` lines for the routine's summary; the page no longer lists trades."""
     when = lambda t: f"{datetime.datetime.fromtimestamp(t):%a %d %b %H:%M}"
-    trs = []
     for g in trades:
         verb = 'Bought' if g['side'] == 'BUY' else 'Sold'
-        span = when(g['t1']) if g['t1'] - g['t0'] < 600 else f"{when(g['t0'])} – {when(g['t1'])}"
         fills = f"{g['fills']} fills" if g['fills'] > 1 else '1 fill'
-        link = f"https://polymarket.com/event/{html.escape(g['event_slug'])}" if g.get('event_slug') else '#'
-        if g['now'] is None:
-            now_cell = '<td class="num faint">no price</td><td class="num faint">–</td>'
-        else:
-            m = g['move']
-            now_cell = (f'<td class="num"><b>{cents(g["now"])}</b><div class="sub {tone(m)}">'
-                        f'{"+" if m > 0.05 else "−" if m < -0.05 else "±"}{abs(m):.1f}¢ since fill</div></td>'
-                        f'<td class="num"><b class="{tone(g["since"])}">{usd(g["since"], True)}</b>'
-                        f'<div class="sub">{"vs holding" if g["side"] == "SELL" else "on these shares"}</div></td>')
-        trs.append(f'''<tr>
-  <td class="mkt"><a href="{link}">{html.escape(g['title'])}</a><div class="meta">{side(g['outcome'])}<span>{span}</span></div></td>
-  <td class="num"><b>{verb} {g['shares']:,.2f}</b> at {cents(g['price'])}<div class="sub">{usd(g['cash'])} · {fills}</div></td>
-  {now_cell}
-</tr>''')
         print(f"  trade: {when(g['t1'])} {verb} {g['shares']:,.2f} {g['outcome']} {short(g['title'])} at {cents(g['price'])}"
               f" ({fills}), now {cents(g['now']) if g['now'] is not None else '?'}")
-    return (f'<section class="trades"><h2>Trades, last {TRADE_DAYS} days</h2>'
-            '<div class="table-box"><table><thead><tr><th>Market</th><th>Filled</th><th>Now</th><th>Since fill</th></tr></thead>'
-            f'<tbody>{"".join(trs)}</tbody></table></div>'
-            '<p class="wx-note">Fills at the same price on the same market are grouped, so a limit order that filled in pieces shows as one line. '
-            '"Since fill" is the mark-to-market change on those shares at today\'s price; for a sale, it is what selling gained or lost against holding.</p>'
-            '</section>')
 
 
 def pnl_section():
@@ -561,7 +525,7 @@ def pnl_section():
 
 
 pnl_html = pnl_section()
-trades_html = trades_section(recent_trades())
+print_trades(recent_trades())
 weather_html = weather_section()
 hunt_html = hunt_section()
 
@@ -644,7 +608,9 @@ page = f'''<title>Nothing Ever Happens Book</title>
 }}
 * {{ box-sizing: border-box; }}
 body {{ background: var(--ground); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.5; }}
-.wrap {{ max-width: 1180px; margin: 0 auto; padding: 40px 28px 64px; display: grid; gap: 32px; }}
+.wrap {{ max-width: 1360px; margin: 0 auto; padding: 40px 28px 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }}
+/* the brief keeps its 1124px column; only the hunt section (#hunt) runs wider, for its tables */
+.wrap > :not(#hunt) {{ width: 100%; max-width: 1124px; justify-self: center; }}
 a {{ color: inherit; text-decoration: none; }}
 a:hover {{ color: var(--accent); }}
 a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }}
@@ -662,10 +628,6 @@ h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw,
 .stat .v {{ font-family: var(--mono); font-size: 24px; font-weight: 500; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }}
 .stat .s {{ font-family: var(--mono); font-size: 12.5px; color: var(--muted); }}
 .stat.hot {{ background: var(--surface-2); padding-left: 20px; }}
-
-.movers {{ display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 14px; color: var(--muted); }}
-.movers b {{ font-family: var(--mono); font-weight: 500; }}
-.movers span.lbl {{ color: var(--ink); font-weight: 600; }}
 
 .table-box {{ background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }}
 table {{ width: 100%; border-collapse: collapse; min-width: 760px; }}
@@ -726,14 +688,10 @@ table.wx td {{ padding: 10px 14px; vertical-align: middle; }}
 td.cc {{ background: color-mix(in srgb, var(--faint) calc(var(--c) * 0.35%), transparent); }}
 td.faint {{ color: var(--faint); }}
 .verdict {{ font-weight: 600; font-size: 13.5px; white-space: nowrap; }}
-.hunt-teaser {{ display: grid; gap: 10px; }}
-.hunt-teaser h2 {{ margin: 0; }}
-.hunt-teaser .more {{ color: var(--accent); font-weight: 600; }}
 a.fair {{ font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 4px; border: 1px dashed var(--rule); }}
 a.fair.up {{ color: var(--up); }} a.fair.down {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }}
-.trades {{ min-width: 0; }}
-.trades table {{ min-width: 640px; }}
-.trades .wx-note {{ margin: 10px 0 0; }}
+.page-foot {{ border-top: 1px solid var(--rule); padding-top: 16px; font-size: 13.5px; color: var(--muted); }}
+.page-foot a {{ color: var(--accent); font-weight: 600; }}
 .lower {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 32px; }}
 h2 {{ font-family: var(--display); font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 10px; }}
 ul {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }}
@@ -747,7 +705,6 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
   .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
   .stat, .stat + .stat {{ padding: 14px 14px 14px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
   .stat.hot {{ padding-left: 14px; grid-column: 1 / -1; order: -1; }}
-  .movers .lbl {{ flex-basis: 100%; }}
   .stamp {{ text-align: left; }}
 }}
 </style>
@@ -759,7 +716,7 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
       <h1>Nothing Ever Happens Book</h1>
       <!--BRIEF-->
     </div>
-    <div class="stamp">Snapshot {fmt_date(SNAP)}, {SNAP:%H:%M}<br>24h window from {WIN.day} {WIN:%b}, {WIN:%H:%M}<br>0x9d4A…5887<!--LOG--></div>
+    <div class="stamp">Snapshot {fmt_date(SNAP)}, {SNAP:%H:%M}<br>24h window from {WIN.day} {WIN:%b}, {WIN:%H:%M}<br>0x9d4A…5887</div>
   </header>
 
   <section class="summary" aria-label="Portfolio summary">
@@ -771,13 +728,6 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
   </section>
 
   {pnl_html}
-
-  <div class="movers">
-    <span class="lbl">Biggest 24h moves</span>
-    {''.join(f'<span>{html.escape(short(r["title"]))} {r["outcome"]} <b class="{tone(r["d24"])}">{usd(r["d24"], True)}</b></span>' for r in movers)}
-  </div>
-
-  {hunt_html}
 
   <div class="table-box">
     <table>
@@ -791,12 +741,12 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
     </table>
   </div>
 
-  {trades_html}
+  {hunt_html}
 
   {weather_html}
 
   {f'<div class="lower">{"".join(lower)}</div>' if lower else ''}
-
+  <!--LOG-->
 </div>
 {HOVER_JS}
 '''
@@ -830,8 +780,9 @@ BRIEF = f"""<div class="brief">
       }})();
       </script>"""
 
-# Link to the routine's run log (site/log/, written by runlog.py); Vercel site only.
-LOG_LINK = '<br><a href="log/" style="color: var(--accent)">Run log →</a>'
+# Link to the routine's run log (site/log/, written by runlog.py) at the foot of the page; Vercel site only.
+LOG_LINK = ('<footer class="page-foot"><a href="log/">Run log →</a> '
+            'How each morning\'s run went: every stage, research subagent and plan usage.</footer>')
 
 # Standalone copy for the Vercel site; the artifact adds this document skeleton itself.
 os.makedirs(os.path.join(HERE, 'site'), exist_ok=True)
