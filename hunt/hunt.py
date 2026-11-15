@@ -1155,7 +1155,8 @@ def render(st, main, extra, noask, held):
         f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'data-wallet="{WALLET}" '
         f'title="Fetch the current order books and your positions from Polymarket and redo the bids, asks, returns and '
-        f'recommendations at those prices. Fair values and the ranking stay as built."><span aria-hidden="true">↻</span>'
+        f'recommendations at those prices. Fair values and the ranking stay as built. The Profit/Loss chart is redrawn too.">'
+        f'<span aria-hidden="true">↻</span>'
         f'<span class="lbl">Refresh prices</span><span class="when"></span></button>')
     nav = dict(day=str(TODAY), tabs=tabs, button=button)
     dropped = ''
@@ -1377,7 +1378,7 @@ def render(st, main, extra, noask, held):
     led by whether the position's edge grew or shrank ("Smaller edge, expand").
     <b>Refresh prices</b> refetches every order book from Polymarket, and the wallet's positions, and redoes Bid, Ask, Rec,
     Return, Per yr, Depth and the positions' figures at those prices: a pick bought since the build gets the Held badge and
-    the positions' call, one sold loses them. "Was" and Rec then compare with the prices when the page was built. It does no
+    the positions' call, one sold loses them. It redraws the Profit/Loss chart at the top too. "Was" and Rec then compare with the prices when the page was built. It does no
     research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
     a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
