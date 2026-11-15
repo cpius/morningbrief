@@ -53,7 +53,7 @@ SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
 UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull
 SITE = os.path.join(ROOT, 'site', 'hunt')
 SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page ...
-NAV = os.path.join(WORK, 'nav.json')  # ... and the hunt's tabs and Refresh prices button in the page's top menu
+NAV = os.path.join(WORK, 'nav.json')  # ... and the hunt's tabs and Refresh button in the page's top menu
 LIVE = 'https://nothing-ever-happens-book.vercel.app/hunt/'
 GAMMA, CLOB, DATA = 'https://gamma-api.polymarket.com', 'https://clob.polymarket.com', 'https://data-api.polymarket.com'
 UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'}
@@ -205,7 +205,7 @@ def advice(p):
     selling into the bid would not keep a pick in the book (under +3% to resolution or 10% a year); Expand when buying
     more at the ask would make the main list; else Keep. When the position's edge (hold vs sell) moved since the last run,
     the call says so first: "Smaller edge, expand". Any other pick: whether its edge (return to resolution) grew or
-    shrank since the last run. The page's Refresh prices button redoes this in JavaScript (REFRESH_JS)."""
+    shrank since the last run. The page's Refresh button redoes this in JavaScript (REFRESH_JS)."""
     if p.get('held'):
         if p.get('fair') is None:
             return None
@@ -985,7 +985,7 @@ def smart_cell(p):
 
 
 def live_attrs(p):
-    """What the page's Refresh prices button needs to redo a row's math at live prices: the built bid and ask too,
+    """What the page's Refresh button needs to redo a row's math at live prices: the built bid and ask too,
     which its "was" lines and the Rec column compare against."""
     fair = '' if p.get('fair') is None else p['fair']
     nz = lambda x: '' if x is None else x
@@ -1116,7 +1116,7 @@ def held_table_html(held):
 
 def render(st, main, extra, noask, held):
     """The brief's Mispricing hunt section (markup, styles and scripts, all scoped to #hunt) and its part of the page's top
-    menu (tabs and the Refresh prices button). refresh.py puts both on the page."""
+    menu (tabs and the Refresh button). refresh.py puts both on the page."""
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
     n_fast, n_slow = len(main), len(extra)  # by rate, for the summary stats
@@ -1154,10 +1154,10 @@ def render(st, main, extra, noask, held):
     button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'data-wallet="{WALLET}" '
-        f'title="Fetch the current order books and your positions from Polymarket and redo the bids, asks, returns and '
-        f'recommendations at those prices. Fair values and the ranking stay as built. The Profit/Loss chart is redrawn too.">'
+        f'title="Fetch the current order books, your positions and your P/L from Polymarket: redo the bids, asks, returns and '
+        f'recommendations at those prices and redraw the Profit/Loss chart. Fair values and the ranking stay as built.">'
         f'<span aria-hidden="true">↻</span>'
-        f'<span class="lbl">Refresh prices</span><span class="when"></span></button>')
+        f'<span class="lbl">Refresh</span><span class="when"></span></button>')
     nav = dict(day=str(TODAY), tabs=tabs, button=button)
     dropped = ''
     if st['dropped']:
@@ -1315,7 +1315,7 @@ def render(st, main, extra, noask, held):
   :root:not([data-theme="light"]) #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 }}
 :root[data-theme="dark"] #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
-/* The biggest moves after a Refresh prices: a card under the Profit/Loss one. It ships in this section, hidden, and
+/* The biggest moves after a Refresh: a card under the Profit/Loss one. It ships in this section, hidden, and
    REFRESH_JS moves it up there, so its rules stand outside #hunt. */
 #hunt-moves {{
   display: grid; gap: 6px; min-width: 0; padding: 18px 20px 12px; background: var(--surface); border: 1px solid var(--rule);
@@ -1384,7 +1384,7 @@ def render(st, main, extra, noask, held):
     the last run's ask (green = cheaper today). <b>Rec</b> on a pick you don't hold says whether its edge (Return)
     is bigger or smaller than at the last run; on a pick you hold it is the positions' call (Sell, Reduce, Keep, Expand),
     led by whether the position's edge grew or shrank ("Smaller edge, expand").
-    <b>Refresh prices</b> refetches every order book from Polymarket, and the wallet's positions, and redoes Bid, Ask, Rec,
+    <b>Refresh</b> in the top menu refetches every order book from Polymarket, and the wallet's positions, and redoes Bid, Ask, Rec,
     Return, Per yr, Depth and the positions' figures at those prices: a pick bought since the build gets the Held badge and
     the positions' call, one sold loses them. It redraws the Profit/Loss chart at the top too. "Was" and Rec then compare with the prices when the page was built. It does no
     research: fair values and the order stay as built. <b>Fair</b> is my
@@ -1428,7 +1428,7 @@ location.replace('/#' + (parts.includes(h) ? 'hunt-' + h : /^m\d+$/.test(h) ? h 
 '''
 
 
-# The hunt section's Refresh prices button: live order books from Polymarket's CLOB (it allows any origin), the same math as econ(),
+# The page's Refresh button (the hunt's, in the top menu): live order books from Polymarket's CLOB (it allows any origin), the same math as econ(),
 # hold_econ() and advice(), written into the rows in place. Nothing is researched and nothing is saved.
 REFRESH_JS = r"""
 (() => {
@@ -1652,7 +1652,7 @@ REFRESH_JS = r"""
       const known = new Set(tokens), outside = pos ? [...pos.keys()].filter(k => !known.has(k)).length : 0;
       const posNote = !pos ? 'positions unavailable' : `${pos.size} positions` + (outside ? `, ${outside} not in the hunt until the next build` : '');
       stamp.textContent = `Live prices at ${t} (page built ${btn.dataset.built}, ${by.size} of ${tokens.length} books, ${posNote})`;
-      lbl.textContent = 'Refresh prices';
+      lbl.textContent = 'Refresh';
     } catch (err) {
       btn.classList.add('err'); lbl.textContent = 'Retry'; when.textContent = '';
       stamp.textContent = `Couldn't refresh the prices: ${err.message}`;

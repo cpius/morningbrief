@@ -340,16 +340,9 @@ CSS = """
 .pnl-v { font-family: var(--mono); font-size: 28px; font-weight: 500; letter-spacing: -.02em; }
 .pnl-k { font-size: 13px; color: var(--muted); margin-left: 10px; }
 .pnl-ctl { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
-.pnl-refresh { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; font: 600 12.5px var(--body); color: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; cursor: pointer; font-variant-numeric: tabular-nums; }
-.pnl-refresh:hover { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
-.pnl-refresh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.pnl-refresh:disabled { cursor: progress; opacity: .7; }
-.pnl-refresh .when { font: 500 12px var(--mono); color: var(--muted); }
-.pnl-refresh .when:empty { display: none; }
-.pnl-refresh.busy span[aria-hidden] { animation: pnl-spin 1s linear infinite; }
-.pnl-refresh.err { color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }
-@keyframes pnl-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .pnl-refresh.busy span[aria-hidden] { animation: none; } }
+.pnl-status { font: 500 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: default; }
+.pnl-status:empty { display: none; }
+.pnl-status.err { color: var(--down); }
 .pnl-tabs { display: flex; gap: 2px; }
 .pnl-tabs button { font: 600 12.5px var(--mono); color: var(--muted); background: none; border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 .pnl-tabs button:hover { color: var(--ink); background: var(--surface-2); }
@@ -991,33 +984,29 @@ JS = r"""
     return { periods: out, explained: !!book };
   }
 
-  const btn = root.querySelector('.pnl-refresh');
-  if (btn) {
-    const lbl = btn.querySelector('.lbl'), when = btn.querySelector('.when'), help = btn.title;
-    btn.addEventListener('click', async () => {
-      btn.disabled = true; btn.classList.add('busy'); btn.classList.remove('err');
-      lbl.textContent = 'Refreshing…'; when.textContent = '';
-      try {
-        const { periods: fresh, explained } = await build((n, of) => { lbl.textContent = `Refreshing… ${n}/${of}`; });
-        load(fresh);
-        render();
-        const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit' });
-        when.textContent = t;
-        btn.title = `Refreshed from Polymarket at ${t}` + (explained ? '.' : ', but the positions behind the swings could not be rebuilt.')
-          + ' ' + help;
-        lbl.textContent = 'Refresh';
-      } catch (e) {
-        btn.classList.add('err'); lbl.textContent = 'Retry';
-        btn.title = `Couldn't refresh: ${e.message}`;
-      } finally {
-        btn.disabled = false; btn.classList.remove('busy');
-      }
-    });
-    // The menu's Refresh prices (the hunt's button) redraws this chart too; both run at once.
-    document.addEventListener('click', e => {
-      if (!btn.disabled && e.target instanceof Element && e.target.closest('#hunt-refresh')) btn.click();
-    });
+  // The page's Refresh (the hunt's button in the top menu) redraws this card too, alongside the prices. A line in the
+  // card's head says how far it has got, then when it was redrawn.
+  const status = root.querySelector('.pnl-status') || root.querySelector('.pnl-ctl').insertAdjacentElement('afterbegin', h('span', 'pnl-status'));
+  let busy = false;
+  async function refresh() {
+    if (busy) return;
+    busy = true;
+    status.className = 'pnl-status'; status.textContent = 'Updating…'; status.title = '';
+    try {
+      const { periods: fresh, explained } = await build((n, of) => { status.textContent = `Updating… ${n}/${of}`; });
+      load(fresh);
+      render();
+      const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit' });
+      status.textContent = `Live at ${t}`;
+      status.title = `Redrawn from Polymarket at ${t}` + (explained ? '.' : ', but the positions behind the swings could not be rebuilt.');
+    } catch (e) {
+      status.className = 'pnl-status err'; status.textContent = "Couldn't update";
+      status.title = `Couldn't redraw the chart: ${e.message}. Refresh to try again.`;
+    } finally {
+      busy = false;
+    }
   }
+  document.addEventListener('click', e => { if (e.target instanceof Element && e.target.closest('#hunt-refresh')) refresh(); });
 
   let width = 0;
   new ResizeObserver(() => { if (plot.clientWidth !== width) { width = plot.clientWidth; render(); } }).observe(plot);
@@ -1032,7 +1021,7 @@ def section(get, pages, wallet, now):
 
 
 def refresh_config(wallet):
-    """What the card's Refresh button needs to redo build() in the browser: the same constants, rules and names."""
+    """What the menu's Refresh needs to redo build() in the browser: the same constants, rules and names."""
     return dict(wallet=wallet, periods=PERIODS, swing=SWING, quiet=QUIET, moveMin=MOVE_MIN, maxNotes=MAX_NOTES, maxDrivers=MAX_DRIVERS,
                 driverMin=DRIVER_MIN, stale=STALE, tailDrivers=TAIL_DRIVERS, workers=WORKERS, nameMax=NAME_MAX, dangling=sorted(DANGLING), deadline=DEADLINE.pattern,
                 tighter=TIGHTER, preposition=PREPOSITION.pattern, labels=load_labels())
@@ -1071,9 +1060,7 @@ def render(periods, wallet):
         print(f'  pnl: callout "{short}" was made by rule; add a name for "{question(title)}" to labels.json to change it')
     tabs = ''.join(f'<button type="button" role="tab" data-k="{p["key"]}" aria-selected="{"true" if p["key"] == "1D" else "false"}">'
                    f'{p["key"]}</button>' for p in periods)
-    refresh = ('<button type="button" class="pnl-refresh" title="Fetch the P/L line, trades and prices from Polymarket '
-               'and redraw this chart and its swings. The rest of the page stays as built; Refresh prices in the menu does this too.">'
-               '<span aria-hidden="true">↻</span><span class="lbl">Refresh</span><span class="when"></span></button>')
+    refresh = '<span class="pnl-status" aria-live="polite"></span>'  # filled when the menu's Refresh redraws the card
     return (f'<section class="pnl" id="pnl" aria-label="Profit and loss">'
             f'<div class="pnl-head"><div><h2>Profit/Loss</h2><span class="pnl-v"></span><span class="pnl-k"></span><span class="pnl-est"></span></div>'
             f'<div class="pnl-ctl">{refresh}<div class="pnl-tabs" role="tablist" aria-label="Period">{tabs}</div></div></div>'

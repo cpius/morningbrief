@@ -9,7 +9,7 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   Profit/Loss card, the positions table, the Mispricing hunt (if `hunt/hunt.py build` ran today, its section from
   `hunt/work/section.html`), the weather and positions closed in the last 24h, with a link to the run log at the foot.
   A menu between the header and the summary (`top_menu()`) has a tab per section, the hunt's parts among them (from
-  `hunt/work/nav.json`), and the hunt's Refresh prices button. It sticks to the top of the window, and `NAV_JS` lights
+  `hunt/work/nav.json`), and the page's Refresh button (the hunt's). It sticks to the top of the window, and `NAV_JS` lights
   the tab of the section being read. Every part of the page shares one column, up to 1304px wide.
   Trades and the biggest movers are printed (`trade:` and `mover:` lines) for the routine's summary, not shown.
 - `pnl.py` builds the Profit/Loss card under the summary: the line polymarket.com plots (`trade_pnl` from
@@ -17,9 +17,9 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   listed below with the positions that drove them. A swing ends where the line reverses (`SWING`) or holds flat for a
   while (`QUIET`), so a day that climbs in steps gets a note per step. The drivers are rebuilt from the wallet's fills and `/v2/prices-history`,
   the marks the P/L snapshots use. `python3 pnl.py` prints the swings; if the API fails, the brief builds without the card.
-  The card's Refresh button redoes `build()` in the browser (a JavaScript copy in `pnl.py`'s `JS`, fed the same
+  The top menu's Refresh redoes `build()` in the browser (a JavaScript copy in `pnl.py`'s `JS`, fed the same
   constants, rules and labels through `#pnl-cfg`), so a change to the Python build needs the same change there.
-  The hunt's Refresh prices in the top menu presses it too. The API records a new P/L value only every few hours
+  The card has no button of its own; a line in its head shows the redraw's progress. The API records a new P/L value only every few hours
   (often 5–13 h apart). Once the last one is `STALE` (3 h) old, the line carries on as a dashed estimate to now:
   that value, moved hour by hour by what every position has done since (`Book.total()`, the same fills and prices
   as the swings). The headline reads "as of" the last value with "≈ … now" beside it, and a last note lists the
@@ -144,9 +144,9 @@ Every row has a Rec column (`advice()`). A held market (in the positions table, 
 the bid is at or above fair plus the reward, **Reduce** when what is left over selling into the bid is under +3% or 10%
 a year (the bars a pick needs to stay in the book), **Expand** when buying more at the ask would make the main list, and
 **Keep** otherwise. Any other pick gets **Bigger/Smaller/Same edge**: its return to resolution against the last run.
-The hunt section's **Refresh prices** button refetches every order book, updates both the best bid and the best ask on each
+The top menu's **Refresh** button (the hunt's) refetches every order book, updates both the best bid and the best ask on each
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
-edge then measured against the build. It also presses the Profit/Loss card's Refresh. The prices that moved most
+edge then measured against the build. It also redraws the Profit/Loss card. The prices that moved most
 (since the build, then since the last refresh) show in a "Biggest moves" card under the Profit/Loss card: it ships
 hidden in the hunt section (`#hunt-moves`, with its own rules outside `#hunt`), and `REFRESH_JS` moves it up there and
 shows it after the first refresh; × hides it until the next one. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
@@ -157,7 +157,7 @@ Build drops picks that fell below 10% a year or +3% to resolution and moves reso
 The section's styles are nested under `#hunt` (CSS nesting) so they stay out of the rest of the brief, and its first
 rules undo the brief's own table and list rules inside it. Its anchors are `hunt-` prefixed (`#hunt-positions`,
 `#hunt-main`, ...); the brief's "fair · hold vs sell" chips link to `#hunt-positions`. `build` also writes
-`hunt/work/nav.json`: the section's tabs (label, anchor, count) and its Refresh prices button, which refresh.py puts in
+`hunt/work/nav.json`: the section's tabs (label, anchor, count) and its Refresh button, which refresh.py puts in
 the page's top menu, which also holds the button's styles (its script stays in the section). The brief's column
 (up to 1304px) is wide enough for the hunt's tables; below 1040px they
 turn into one card per row, and in between they scroll inside their boxes.
