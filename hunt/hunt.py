@@ -201,20 +201,24 @@ def hold_econ(p):
 def advice(p):
     """The Rec column: (label, tone, sub-line), or None.
 
-    A held position: Sell when the bid is at or above fair (plus the reward); Reduce when what is left to earn over
-    selling into the bid would not keep a pick in the book (under +3% to resolution or 10% a year); Expand when buying
-    more at the ask would make the main list; else Keep. When the position's edge (hold vs sell) moved since the last run,
-    the call says so first: "Smaller edge, expand". Any other pick: whether its edge (return to resolution) grew or
+    A held position, by where the bid is against fair (plus the reward), i.e. hold vs sell:
+      more than MIN_EDGE over fair (hold vs sell under -3%)  "Edge reversed, sell"
+      at fair up to MIN_EDGE over (hold vs sell -3% to 0)    "Edge gone, reduce"
+      below fair, buying more at the ask makes the main list "Expand"
+      below fair, any amount                                 "Keep"
+    Expand and Keep are led by "Bigger edge" or "Smaller edge" when hold vs sell moved since the last run ("Smaller
+    edge, keep"). A thin edge below fair is still a Keep: the bars a pick needs to enter the book don't apply to selling.
+    Any other pick: "Edge gone" once its ask is at or above fair, else whether its edge (return to resolution) grew or
     shrank since the last run. The page's Refresh button redoes this in JavaScript (REFRESH_JS)."""
     if p.get('held'):
         if p.get('fair') is None:
             return None
         h, e = hold_econ(p), econ(p)
+        if h and h['tot'] < -MIN_EDGE:
+            return 'Edge reversed, sell', 'down', f"{h['tot'] * 100:+.1f}% left"
         if h and h['tot'] <= 0:
-            label, tone, sub = 'Sell', 'down', 'bid ≥ fair'
-        elif h and weak(h):
-            label, tone, sub = 'Reduce', 'warn', f"{pct(h['ann'])}/yr left" if h['ann'] < MIN_ANN else f"{h['tot'] * 100:+.1f}% left"
-        elif e and e['ann'] >= MAIN_ANN and e['tot'] >= MIN_EDGE:
+            return 'Edge gone, reduce', 'warn', f"{h['tot'] * 100:+.1f}% left"
+        if e and e['ann'] >= MAIN_ANN and e['tot'] >= MIN_EDGE:
             label, tone, sub = 'Expand', 'up', f"{pct(e['ann'])}/yr at ask"
         else:
             label, tone, sub = 'Keep', 'ink', f"{h['tot'] * 100:+.1f}% left" if h else 'no bids'
@@ -229,12 +233,16 @@ def advice(p):
 
 
 def edge_move(then, now):
-    """A pick's return to resolution then and now, as the Rec column's Bigger/Smaller/Same edge."""
-    if abs(now - then) < 0.001:
-        return 'Same edge', 'flat', ''
+    """A pick's return to resolution then and now, as the Rec column's call: Edge gone once the ask is at or above
+    fair (plus the reward), else Bigger/Smaller/Same edge."""
     a, b = pct(then), pct(now)
     if a == b:
         a, b = f'{then * 100:+.1f}%', f'{now * 100:+.1f}%'
+    same = abs(now - then) < 0.001
+    if now <= 0:
+        return 'Edge gone', 'warn', '' if same else f'{a} → {b}'
+    if same:
+        return 'Same edge', 'flat', ''
     return ('Bigger edge', 'up', f'{a} → {b}') if now > then else ('Smaller edge', 'down', f'{a} → {b}')
 
 
@@ -1048,7 +1056,7 @@ def row_html(i, p, e):
 def table_html(rows):
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Market</th>'
             '<th class="rec" title="Bigger or smaller edge: the return to resolution against the last run (after a refresh, '
-            'against the build). A pick you hold gets the positions\' call instead.">Rec</th>'
+            'against the build). Edge gone: the ask is at or above fair. A pick you hold gets the positions\' call instead.">Rec</th>'
             '<th title="Best ask for our side; under it the best bid">Ask</th><th>Fair</th>'
             '<th title="Fair ÷ ask − 1 held to resolution, plus the holding reward">Return</th>'
             '<th title="Return ÷ years to resolution; the list is ranked by it, after today\'s new picks">Per yr ▾</th>'
@@ -1103,9 +1111,9 @@ def held_row_html(i, p, h):
 
 def held_table_html(held):
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>'
-            '<th class="rec" title="Sell: bid at or above fair. Reduce: under +3% or 10% a year left over selling. '
-            'Expand: buying more at the ask would make the main list. Keep: the rest. Bigger or smaller edge first when '
-            'hold vs sell moved since the last run (after a refresh, since the build).">Rec</th>'
+            '<th class="rec" title="Edge reversed, sell: bid more than 3% over fair. Edge gone, reduce: bid at fair up to '
+            '3% over. Expand: below fair, and buying more at the ask would make the main list. Keep: below fair. Bigger or '
+            'smaller edge first when hold vs sell moved since the last run (after a refresh, since the build).">Rec</th>'
             '<th>Shares</th><th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>'
             '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th>'
             '<th title="Hold vs sell ÷ years to resolution">Per yr</th>'
@@ -1152,7 +1160,7 @@ def render(st, main, extra, noask, held):
     if st['dropped']:
         tabs.append(('Dropped', 'hunt-dropped', len(st['dropped'])))
     button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
-        f'data-main="{MAIN_ANN}" data-min-ann="{MIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
+        f'data-main="{MAIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'data-wallet="{WALLET}" '
         f'title="Fetch the current order books, your positions and your P/L from Polymarket: redo the bids, asks, returns and '
         f'recommendations at those prices and redraw the Profit/Loss chart. Fair values and the ranking stay as built.">'
@@ -1180,10 +1188,11 @@ def render(st, main, extra, noask, held):
                      'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling into the '
                      'best bid now: fair ÷ bid − 1, plus the holding reward where the market pays it. Red means the bid is above '
                      'my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares × (fair + reward − bid). '
-                     '<b>Rec</b>: <b>Sell</b> when the bid is at or above fair; <b>Reduce</b> when what is left over selling '
-                     f'is under +{MIN_EDGE * 100:.0f}% or {MIN_ANN * 100:.0f}% a year, the bars a pick needs to stay in the book; '
-                     f'<b>Expand</b> when buying more at the ask would make the main list ({MAIN_ANN * 100:.0f}% a year); '
-                     '<b>Keep</b> otherwise. Sorted by Per yr, lowest first.'
+                     f'<b>Rec</b>: <b>Edge reversed, sell</b> when the bid is more than {MIN_EDGE * 100:.0f}% over fair '
+                     f'(outside a fair value\'s own error); <b>Edge gone, reduce</b> when it is at fair up to {MIN_EDGE * 100:.0f}% over; '
+                     f'<b>Expand</b> when it is below fair and buying more at the ask would make the main list ({MAIN_ANN * 100:.0f}% a year); '
+                     '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
+                     'bigger or smaller since the last run. Sorted by Per yr, lowest first.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
     rest = len(main) - len(fresh)
@@ -1382,8 +1391,9 @@ def render(st, main, extra, noask, held):
   <footer>
     <p><b>Ask</b> is the best offer for our side now, with the best bid (what selling would fetch) under it; "was" shows
     the last run's ask (green = cheaper today). <b>Rec</b> on a pick you don't hold says whether its edge (Return)
-    is bigger or smaller than at the last run; on a pick you hold it is the positions' call (Sell, Reduce, Keep, Expand),
-    led by whether the position's edge grew or shrank ("Smaller edge, expand").
+    is bigger or smaller than at the last run, or "Edge gone" once the ask reaches fair; on a pick you hold it is the
+    positions' call ("Edge reversed, sell", "Edge gone, reduce", Expand, Keep), with Expand and Keep led by whether the
+    position's edge grew or shrank ("Smaller edge, keep").
     <b>Refresh</b> in the top menu refetches every order book from Polymarket, and the wallet's positions, and redoes Bid, Ask, Rec,
     Return, Per yr, Depth and the positions' figures at those prices: a pick bought since the build gets the Held badge and
     the positions' call, one sold loses them. It redraws the Profit/Loss chart at the top too. "Was" and Rec then compare with the prices when the page was built. It does no
@@ -1435,7 +1445,7 @@ REFRESH_JS = r"""
   const btn = document.getElementById('hunt-refresh');
   if (!btn) return;
   const APR = +btn.dataset.apr, MIN_DAYS = +btn.dataset.minDays, MAIN = +btn.dataset.main;
-  const MIN_ANN = +btn.dataset.minAnn, MIN_EDGE = +btn.dataset.minEdge;
+  const MIN_EDGE = +btn.dataset.minEdge;
   const px = x => x == null ? '–' : String(+x.toPrecision(3));
   const fv = x => x >= 0.95 || x <= 0.05 ? x.toFixed(3) : x.toFixed(2);
   const pct = x => (x < 0 ? '-' : '+') + Math.abs(Math.round(x * 100)).toLocaleString('en-US') + '%';
@@ -1479,9 +1489,9 @@ REFRESH_JS = r"""
   const pct1 = x => (x < 0 ? '-' : '+') + Math.abs(x * 100).toFixed(1) + '%';
   const holdCall = (bid, ask, fair, end, hold, built) => {  // built: the bid when the page was built, for the edge move
     const h = bid ? holdEcon(bid, fair, end, hold, 0) : null, e = ask ? econ(ask, fair, end, hold) : null;
-    const c = h && h.tot <= 0 ? ['Sell', 'down', 'bid ≥ fair']
-      : h && (h.ann < MIN_ANN || h.tot < MIN_EDGE) ? ['Reduce', 'warn', h.ann < MIN_ANN ? `${pct(h.ann)}/yr left` : `${pct1(h.tot)} left`]
-      : e && e.ann >= MAIN && e.tot >= MIN_EDGE ? ['Expand', 'up', `${pct(e.ann)}/yr at ask`]
+    if (h && h.tot < -MIN_EDGE) return ['Edge reversed, sell', 'down', `${pct1(h.tot)} left`];
+    if (h && h.tot <= 0) return ['Edge gone, reduce', 'warn', `${pct1(h.tot)} left`];
+    const c = e && e.ann >= MAIN && e.tot >= MIN_EDGE ? ['Expand', 'up', `${pct(e.ann)}/yr at ask`]
       : ['Keep', 'ink', h ? `${pct1(h.tot)} left` : 'no bids'];
     const then = h && built ? holdEcon(built, fair, end, hold, 0) : null;
     if (then && Math.abs(h.tot - then.tot) >= 0.001) c[0] = `${h.tot > then.tot ? 'Bigger' : 'Smaller'} edge, ${c[0].toLowerCase()}`;
@@ -1489,9 +1499,11 @@ REFRESH_JS = r"""
   };
   const edgeCall = (then, now) => {
     if (now == null) return ['No sellers', 'down', ''];
-    if (Math.abs(now - then) < 0.001) return ['Same edge', 'flat', ''];
     let a = pct(then), b = pct(now);
     if (a === b) { a = pct1(then); b = pct1(now); }
+    const same = Math.abs(now - then) < 0.001;
+    if (now <= 0) return ['Edge gone', 'warn', same ? '' : `${a} → ${b}`];
+    if (same) return ['Same edge', 'flat', ''];
     return [now > then ? 'Bigger edge' : 'Smaller edge', now > then ? 'up' : 'down', `${a} → ${b}`];
   };
   const putRec = (tr, call) => put(cell(tr, 'Rec'), call

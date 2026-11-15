@@ -140,10 +140,20 @@ shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. wh
 selling into the bid now, and the $ edge (shares × (fair + reward − bid)). Held positions are never auto-dropped and
 leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
 
-Every row has a Rec column (`advice()`). A held market (in the positions table, or a held hunt pick) gets **Sell** when
-the bid is at or above fair plus the reward, **Reduce** when what is left over selling into the bid is under +3% or 10%
-a year (the bars a pick needs to stay in the book), **Expand** when buying more at the ask would make the main list, and
-**Keep** otherwise. Any other pick gets **Bigger/Smaller/Same edge**: its return to resolution against the last run.
+Every row has a Rec column (`advice()`). A held market (in the positions table, or a held hunt pick) is called by where
+its bid sits against fair plus the reward (hold vs sell):
+
+| Bid against fair | Bid fell since last run | No change | Bid rose since last run |
+|---|---|---|---|
+| Below fair, and buying more at the ask makes the main list | Bigger edge, expand | Expand | Smaller edge, expand |
+| Below fair, any amount | Bigger edge, keep | Keep | Smaller edge, keep |
+| At fair up to 3% over (hold vs sell 0 to −3%) | Edge gone, reduce | Edge gone, reduce | Edge gone, reduce |
+| More than 3% over (hold vs sell under −3%) | Edge reversed, sell | Edge reversed, sell | Edge reversed, sell |
+| No bids | Keep | Keep | Keep |
+
+The 3% is `MIN_EDGE`, a fair value's own error. A thin edge below fair stays a Keep: the bars a pick needs to enter
+the book (+3% to resolution, 10% a year) don't apply to selling. Any other pick gets **Bigger/Smaller/Same edge**: its
+return to resolution against the last run, or **Edge gone** once its ask is at or above fair plus the reward.
 The top menu's **Refresh** button (the hunt's) refetches every order book, updates both the best bid and the best ask on each
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
 edge then measured against the build. It also redraws the Profit/Loss card. The prices that moved most
