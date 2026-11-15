@@ -76,19 +76,13 @@ for a in activity:
         else:
             f['sell_sh'] += a['size']; f['sell_cash'] += a['usdc_size']
         meta.setdefault(a['token_id'], a)
-    elif a['type'] == 'REDEEM' and a.get('condition_id'):
-        # Redeeming pays the winning outcome; treat it as a sale at the payout.
-        try:
-            m = get(f"https://gamma-api.polymarket.com/markets?condition_ids={a['condition_id']}&closed=true")[0]
-            prices = [float(x) for x in json.loads(m['outcomePrices'])]
-            tokens = json.loads(m['clobTokenIds'])
-            idx = prices.index(max(prices))
-            asset = tokens[idx]
-            f = flows[asset]
-            f['sell_sh'] += a['size']; f['sell_cash'] += a['usdc_size']; f['redeemed'] = True
-            meta.setdefault(asset, dict(a, outcome=json.loads(m['outcomes'])[idx]))
-        except Exception:
-            pass
+    elif a['type'] == 'REDEEM' and a.get('token_id'):
+        # Treat a redemption as a sale at the payout: $1 a share for the winning side, $0 for the losing one.
+        # v2 rows name the token actually redeemed; don't assume it was the winner (a lost Norway No once
+        # showed up as Norway Yes −$79.50).
+        f = flows[a['token_id']]
+        f['sell_sh'] += a['size']; f['sell_cash'] += a['usdc_size']; f['redeemed'] = True
+        meta.setdefault(a['token_id'], a)
 
 rows = []
 held = set()
