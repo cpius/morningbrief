@@ -1235,29 +1235,6 @@ def render(st, main, extra, noask, held):
   td.flash {{ animation: hunt-flash 2.5s ease-out; }}
   @media (prefers-reduced-motion: reduce) {{ td.flash {{ animation: none; }} }}
   .live {{ color: var(--muted); font-size: 13px; }}
-  dialog.moves {{ width: min(680px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; color: var(--ink); background: var(--surface);
-                  border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 24px 64px rgb(0 0 0 / .3); }}
-  dialog.moves[open] {{ display: flex; flex-direction: column; }}
-  dialog.moves::backdrop {{ background: rgb(8 12 20 / .5); }}
-  .moves-head {{ display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 18px 20px 12px; border-bottom: 1px solid var(--rule); }}
-  .moves-head h2 {{ margin: 0; }}
-  .moves-head p {{ margin: 2px 0 0; font-size: 13px; color: var(--muted); }}
-  .moves-close {{ flex: none; width: 32px; height: 32px; font-size: 20px; line-height: 1; color: var(--muted); background: none; cursor: pointer;
-                  border: 1px solid var(--rule); border-radius: 999px; }}
-  .moves-close:hover {{ color: var(--ink); }}
-  .moves-close:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
-  .moves-list {{ list-style: none; margin: 0; padding: 0 20px; overflow-y: auto; }}
-  .moves-list li {{ display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 4px 16px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid var(--rule); }}
-  .moves-list li:last-child {{ border-bottom: 0; }}
-  .moves-list a {{ font-weight: 600; line-height: 1.35; }}
-  .moves-list .sub {{ grid-column: 1; }}
-  .moves-list .fair {{ grid-column: 2 / -1; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
-  .moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
-  .moves-list .chg {{ color: var(--muted); }}
-  .moves-list .d {{ font-weight: 600; }}
-  .moves-empty {{ margin: 0; padding: 20px; color: var(--muted); }}
-  .moves-foot {{ margin: 0; padding: 10px 20px 14px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); }}
-  .moves-foot:empty {{ display: none; }}
   tr:target {{ background: color-mix(in srgb, var(--accent) 12%, transparent); }}
   .stat.goldk {{ background: var(--gold-bg); padding-left: 20px; }}
   .stat.goldk .v {{ color: var(--gold); }}
@@ -1314,13 +1291,6 @@ def render(st, main, extra, noask, held):
     .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
     .stat.goldk {{ padding-left: 12px; }}
     .boxes {{ grid-template-columns: 1fr; }}
-    /* the moves modal: the name takes its own line, the numbers sit under it */
-    .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
-    .moves-list a {{ grid-column: 1 / -1; }}
-    .moves-list .sub {{ grid-row: 2 / span 2; }}
-    .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
-    .moves-list .d {{ grid-column: 3; grid-row: 2; }}
-    .moves-list .fair {{ grid-row: 3; }}
   }}
   @media (max-width: 1040px) {{
     table.hunt thead {{ display: none; }}
@@ -1345,6 +1315,44 @@ def render(st, main, extra, noask, held):
   :root:not([data-theme="light"]) #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 }}
 :root[data-theme="dark"] #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
+/* The biggest moves after a Refresh prices: a card under the Profit/Loss one. It ships in this section, hidden, and
+   REFRESH_JS moves it up there, so its rules stand outside #hunt. */
+#hunt-moves {{
+  display: grid; gap: 6px; min-width: 0; padding: 18px 20px 12px; background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 10px; scroll-margin-top: 64px;
+  &[hidden] {{ display: none; }}
+  .moves-head {{ display: flex; justify-content: space-between; align-items: start; gap: 16px; }}
+  .moves-head h2 {{ margin: 0; }}
+  .moves-head p {{ margin: 2px 0 0; font-size: 13px; color: var(--muted); }}
+  .moves-close {{ flex: none; width: 32px; height: 32px; font-size: 20px; line-height: 1; color: var(--muted); background: none; cursor: pointer;
+                  border: 1px solid var(--rule); border-radius: 999px; }}
+  .moves-close:hover {{ color: var(--ink); }}
+  .moves-close:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+  .moves-list {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 0 28px;
+                 grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); }}
+  .moves-list li {{ display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 4px 16px; align-items: baseline; padding: 11px 0;
+                    border-top: 1px solid var(--rule); }}
+  .moves-list a {{ font-weight: 600; line-height: 1.35; }}
+  .moves-list .sub {{ grid-column: 1; font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: normal; }}
+  .moves-list .fair {{ grid-column: 2 / -1; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
+  .moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
+  .moves-list .chg {{ color: var(--muted); }}
+  .moves-list .d {{ font-weight: 600; }}
+  .moves-empty {{ margin: 0; padding: 12px 0; color: var(--muted); border-top: 1px solid var(--rule); }}
+  .moves-foot {{ margin: 0; padding: 10px 0 2px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--rule); }}
+  .moves-foot:empty {{ display: none; }}
+  @media (max-width: 720px) {{
+    padding: 16px 14px 10px;
+    /* the name takes its own line, the numbers sit under it */
+    .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
+    .moves-list a {{ grid-column: 1 / -1; }}
+    .moves-list .sub {{ grid-row: 2 / span 2; }}
+    .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
+    .moves-list .d {{ grid-column: 3; grid-row: 2; }}
+    .moves-list .fair {{ grid-row: 3; }}
+  }}
+  @media print {{ display: none; }}
+}}
 @keyframes hunt-spin {{ to {{ transform: rotate(360deg); }} }}
 @keyframes hunt-flash {{ from {{ background: color-mix(in srgb, var(--accent) 22%, transparent); }} to {{ background: transparent; }} }}
 </style>
@@ -1392,12 +1400,12 @@ def render(st, main, extra, noask, held):
     <p>Holding-reward eligibility is Gamma's <i>holdingRewardsEnabled</i> flag, read today. Prices from Polymarket's CLOB.
     Rebuilt every morning by the morning brief routine.</p>
   </footer>
-  <dialog class="moves" id="hunt-moves" aria-labelledby="moves-title">
+  <section class="moves" id="hunt-moves" aria-labelledby="moves-title" aria-live="polite" hidden>
     <div class="moves-head"><div><h2 id="moves-title">Biggest moves</h2><p id="moves-since"></p></div>
-      <button type="button" class="moves-close" id="moves-close" aria-label="Close">×</button></div>
+      <button type="button" class="moves-close" id="moves-close" aria-label="Hide until the next refresh" title="Hide until the next refresh">×</button></div>
     <ol class="moves-list" id="moves-list"></ol>
     <p class="moves-foot" id="moves-foot"></p>
-  </dialog>
+  </section>
 </section>
 <script>
 {REFRESH_JS}
@@ -1560,8 +1568,11 @@ REFRESH_JS = r"""
     const e = econ(b.ask, +li.dataset.fair, li.dataset.end, li.dataset.hold === '1');
     out.textContent = ` · ask now ${px(b.ask)} (${bid}), ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
   };
-  // The modal after a refresh: the prices that moved most since the reader last saw them (the build, then each refresh).
-  const dlg = document.getElementById('hunt-moves'), seen = new Map(), TOP = 10;
+  // The card after a refresh: the prices that moved most since the reader last saw them (the build, then each refresh).
+  // It ships hidden in this section and belongs under the Profit/Loss card (under the summary if there is none).
+  const box = document.getElementById('hunt-moves'), seen = new Map(), TOP = 10;
+  const spot = document.getElementById('pnl') || document.getElementById('summary');
+  if (box && spot) spot.after(box);
   let sinceText = `the page was built at ${btn.dataset.built}`;
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const num = s => s === '' || s == null || isNaN(+s) ? null : +s;
@@ -1571,12 +1582,12 @@ REFRESH_JS = r"""
     return { kind, prev };
   };
   const showMoves = (moves, total) => {
-    if (!dlg || !dlg.showModal) return;
-    const list = dlg.querySelector('#moves-list');
+    if (!box) return;
+    const list = box.querySelector('#moves-list');
     // a quote that appeared or vanished outranks any move in cents; then the bigger move first
     moves.sort((a, b) => (b.d == null) - (a.d == null) || Math.abs(b.d || 0) - Math.abs(a.d || 0));
     const seenTok = new Set(), uniq = moves.filter(m => !seenTok.has(m.token) && seenTok.add(m.token));
-    dlg.querySelector('#moves-since').textContent = `Since ${sinceText}`;
+    box.querySelector('#moves-since').textContent = `Since ${sinceText}`;
     list.innerHTML = uniq.slice(0, TOP).map(m => {
       const tone = m.good ? 'up' : 'down';
       const d = m.d == null ? (m.now == null ? 'gone' : 'new')
@@ -1589,19 +1600,15 @@ REFRESH_JS = r"""
              `<span class="fair">${m.fair == null ? 'no fair value yet' : 'fair ' + fv(m.fair)}</span></li>`;  // as built, never recomputed
     }).join('');
     list.hidden = !uniq.length;
-    let empty = dlg.querySelector('.moves-empty');
+    let empty = box.querySelector('.moves-empty');
     if (!uniq.length && !empty) { empty = document.createElement('p'); empty.className = 'moves-empty'; list.after(empty); }
     if (empty) { empty.hidden = !!uniq.length; empty.textContent = 'No price has moved.'; }
-    dlg.querySelector('#moves-foot').textContent = uniq.length
+    box.querySelector('#moves-foot').textContent = uniq.length
       ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position. Fair is my estimate from the build, not redone.`
       : '';
-    if (!dlg.open) dlg.showModal();
-    list.scrollTop = 0;
+    box.hidden = false;
   };
-  if (dlg) {
-    dlg.querySelector('#moves-close').addEventListener('click', () => dlg.close());
-    dlg.addEventListener('click', ev => { if (ev.target === dlg) dlg.close(); });  // a click on the backdrop
-  }
+  if (box) box.querySelector('#moves-close').addEventListener('click', () => { box.hidden = true; });
   const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('hunt-asks-at');
   btn.addEventListener('click', async () => {
     const rows = [...document.querySelectorAll('#hunt [data-token]')];

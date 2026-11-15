@@ -146,7 +146,10 @@ a year (the bars a pick needs to stay in the book), **Expand** when buying more 
 **Keep** otherwise. Any other pick gets **Bigger/Smaller/Same edge**: its return to resolution against the last run.
 The hunt section's **Refresh prices** button refetches every order book, updates both the best bid and the best ask on each
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
-edge then measured against the build. It also presses the Profit/Loss card's Refresh. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
+edge then measured against the build. It also presses the Profit/Loss card's Refresh. The prices that moved most
+(since the build, then since the last refresh) show in a "Biggest moves" card under the Profit/Loss card: it ships
+hidden in the hunt section (`#hunt-moves`, with its own rules outside `#hunt`), and `REFRESH_JS` moves it up there and
+shows it after the first refresh; × hides it until the next one. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
 `advice()`, so a rule change needs the same change there.
 
 Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved".
