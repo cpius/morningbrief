@@ -35,7 +35,7 @@ book's `reviews` (kept for the next day, so the next review can look only at new
 either side clears the main list's bars at today's prices. The routine verifies those itself before it `add`s them.
 Only the standard library is used.
 """
-import argparse, datetime, glob, html, json, os, re, shutil, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, glob, gzip, html, json, os, re, shutil, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
@@ -105,8 +105,13 @@ TITLE_NOISE = re.compile(NOISE_WORDS, re.I)                           # the even
 def get(url, tries=5, timeout=20):
     for i in range(tries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
-                return json.load(r)
+            # Gamma serves /events and /events/keyset pages above limit=50 gzip-only (406 gzip_required otherwise).
+            req = urllib.request.Request(url, headers={**UA, 'Accept-Encoding': 'gzip'})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read()
+                if r.headers.get('Content-Encoding') == 'gzip':
+                    body = gzip.decompress(body)
+                return json.loads(body)
         except urllib.error.HTTPError as e:
             if e.code in (400, 404) or i == tries - 1:
                 raise
@@ -1164,7 +1169,7 @@ def render(st, main, extra, noask, held):
         noask_html = ('<section id="hunt-noask"><h3>No sellers today</h3><p class="note">Still in the book, but nobody is offering our side, '
                       'so there is no return to show.</p><ul class="plain">' + ''.join(
                           f'<li {live_attrs(p)}><a href="{esc(p["url"])}">{esc(p["name"])}</a> <span class="faint">{p["side"]}, fair '
-                          f'{p["fair"]:.2f}{f", bid {px(p.get("bid"))}" if p.get("bid") else ""}</span><span class="live"></span></li>'
+                          f'{p["fair"]:.2f}{(", bid " + px(p.get("bid"))) if p.get("bid") else ""}</span><span class="live"></span></li>'
                           for p in noask) + '</ul></section>')
     above = sum(1 for _, h in held if h and h['tot'] < 0)
     unvalued = sum(1 for p, _ in held if p.get('fair') is None)
