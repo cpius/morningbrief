@@ -19,6 +19,9 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   the marks the P/L snapshots use. `python3 pnl.py` prints the swings; if the API fails, the brief builds without the card.
   The card's Refresh button redoes `build()` in the browser (a JavaScript copy in `pnl.py`'s `JS`, fed the same
   constants, rules and labels through `#pnl-cfg`), so a change to the Python build needs the same change there.
+  The hunt's Refresh prices in the top menu presses it too. The API records a new P/L value only every few hours
+  (often 5–13 h apart); once the last one is `STALE` (3 h) old, the line after it is dashed, the headline reads
+  "as of" that time and the chart says when Polymarket last updated. Price histories are fetched `WORKERS` (8) at once.
   The chart's callouts use the short names in `labels.json` (market question without its deadline → name, e.g.
   "Supreme Court vacancy"). A market missing from it gets a rule-made name and a `pnl: callout ... was made by rule`
   line in the output; add an entry to fix a clumsy one.
@@ -139,7 +142,7 @@ a year (the bars a pick needs to stay in the book), **Expand** when buying more 
 **Keep** otherwise. Any other pick gets **Bigger/Smaller/Same edge**: its return to resolution against the last run.
 The hunt section's **Refresh prices** button refetches every order book, updates both the best bid and the best ask on each
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
-edge then measured against the build. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
+edge then measured against the build. It also presses the Profit/Loss card's Refresh. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
 `advice()`, so a rule change needs the same change there.
 
 Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved".
