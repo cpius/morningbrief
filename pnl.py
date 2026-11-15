@@ -18,7 +18,8 @@ MOVE_MIN = 0.04   # a swing smaller than this share of the period's range gets n
 MAX_NOTES = 5     # swings labelled per period
 MAX_DRIVERS = 3   # positions named per swing
 DRIVER_MIN = 0.05  # ... each at least this share of the swing
-STALE = 3 * HOUR  # when the API's last recorded value is this old, the line after it is drawn dashed and flagged
+STALE = 3 * HOUR  # when the API's last recorded value is this old, the line carries on as a dashed estimate
+TAIL_DRIVERS = 4  # positions named under the estimate's note, either way
 WORKERS = 8       # price histories fetched at once (the Data API took 16 without a 503 on 15 Nov; 3 was 5x slower)
 
 
@@ -214,6 +215,10 @@ class Book:
         p = self.price(tok, t)
         return h, c, p, c + (h * p if abs(h) > 1e-6 and p is not None else 0.0)
 
+    def total(self, t):
+        """Every position's P/L together at time t."""
+        return sum(self.state(tok, t)[3] for tok in self.events)
+
     def drivers(self, t0, t1):
         """Positions ranked by how much their P/L changed between t0 and t1."""
         out = []
@@ -247,18 +252,39 @@ def snapshots(points):
     return out
 
 
+def tail_note(book, tail):
+    """The estimated stretch as one more note: its change, and the positions that moved most since, either way."""
+    (ta, va), (tb, vb) = tail[0], tail[-1]
+    d = vb - va
+    shown = book.drivers(ta, tb)[:TAIL_DRIVERS]
+    mid = min(tail[1:], key=lambda q: abs(q[0] - (ta + tb) / 2))  # pinned on the tail's middle hour: it wanders both ways
+    return dict(t0=ta, t1=tb, d=d, drivers=shown, rest=d - sum(r['d'] for r in shown), rebuilt=d, est=True,
+                at=mid[0], v=mid[1])
+
+
 def build(get, pages, wallet, now):
     """Chart data per period: the line, the headline change and the labelled swings."""
     points = retrying(get, f'{DATA}/user-pnl?user={wallet}&interval=all&fidelity=1h')['data']['points']
     points = [x for x in points if x.get('trade_pnl') is not None]
     first_t, last_t, last_v = points[0]['timestamp'], points[-1]['timestamp'], points[-1]['trade_pnl']
     snaps = snapshots(points)
-    recorded = snaps[-1][0]  # the API's last new value; the hourly points after it repeat it
+    recorded, rec_v = snaps[-1]  # the API's last new value; the hourly points after it repeat it
     try:
         book = Book(get, pages, wallet, now)
     except Exception as e:  # the line still stands without the positions behind it
         print(f'  pnl: swings left unexplained ({type(e).__name__}: {e})')
         book = None
+    # Once that value is STALE the line carries on as an estimate, hour by hour to now: the last value, moved by what
+    # every position has done since (the wallet's fills and the Data API's prices, as for the swings). On 1-15 Nov
+    # that matched each step the API later recorded to $8 typically, $32 at most. Without the positions it is held.
+    tail = None
+    if now - recorded >= STALE:
+        times = list(range(recorded, now, HOUR)) + [now]
+        if book:
+            at_rec = book.total(recorded)
+            tail = [(t, rec_v + book.total(t) - at_rec) for t in times]
+        else:
+            tail = [(recorded, rec_v), (now, rec_v)]
     jan1 = datetime.datetime(datetime.datetime.fromtimestamp(now).year, 1, 1).timestamp()
     out = []
     for key, label, span in PERIODS:
@@ -288,14 +314,22 @@ def build(get, pages, wallet, now):
                     note['rest'] = d - sum(r['d'] for r in note['drivers'])
             notes.append(note)
         notes = sorted(sorted(notes, key=lambda n: -abs(n['d']))[:MAX_NOTES], key=lambda n: n['t0'])
-        # plateau-and-ramp line: each recorded value is held until the hour before the next one
+        tail_p = None
+        if tail:
+            inside = [(t, v) for t, v in tail if t >= start]
+            ref = base if recorded >= start else inside[0][1]  # a window opening after the last value starts on the estimate
+            tail_p = [(t, v - ref) for t, v in inside]
+            if book and tail_p[-1][0] > tail_p[0][0]:
+                notes.append(tail_note(book, tail_p))
+        # plateau-and-ramp line: each recorded value is held until the hour before the next one; a stale last value
+        # isn't held, the tail takes over from it
         line = []
         for (t, v, _), nxt in zip(series, series[1:] + [(last_t + HOUR, None, None)]):
             line.append((t, v - base))
-            if nxt[0] - HOUR > t:
+            if nxt[0] - HOUR > t and not (tail and nxt[1] is None):
                 line.append((nxt[0] - HOUR, v - base))
-        out.append(dict(key=key, label=label, t0=start, t1=last_t, change=last_v - base, line=line, notes=notes,
-                        recorded=recorded))
+        out.append(dict(key=key, label=label, t0=start, t1=tail[-1][0] if tail else last_t, change=last_v - base,
+                        line=line, notes=notes, recorded=recorded, tail=tail_p, est=bool(tail and book)))
     return out
 
 
@@ -329,7 +363,10 @@ CSS = """
 .pnl-plot .area { fill: var(--accent); opacity: .1; }
 .pnl-plot .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .pnl-plot .end { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.pnl-plot .line.held { stroke-dasharray: 5 5; stroke-linecap: butt; opacity: .55; }
+.pnl-plot .line.held { stroke-dasharray: 5 5; stroke-linecap: butt; opacity: .7; }
+.pnl-plot .end.est { fill: var(--surface); stroke: var(--accent); }
+.pnl-est { display: inline-block; white-space: nowrap; font: 500 13px var(--mono); margin-left: 10px; font-variant-numeric: tabular-nums; cursor: help; }
+.pnl-tag { font-size: 12.5px; color: var(--muted); font-style: italic; }
 .pnl-plot .stale text { font: 11.5px var(--body); fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
 .pnl-plot .band { fill: var(--accent); opacity: 0; transition: opacity .12s; }
 .pnl-plot .band.on { opacity: .1; }
@@ -426,8 +463,9 @@ JS = r"""
     if (a.d === b.d && a.mon === b.mon) return a.hm;
     return ref - t < 6 * 86400 ? `${a.wd} ${a.hm}` : `${a.d} ${a.mon} ${a.hm}`;
   };
-  // Polymarket's last recorded value, when the line has held it so long that its flat tail says nothing; else null.
-  const heldFrom = p => p.recorded != null && p.t1 - p.recorded >= cfg.stale ? p.recorded : null;
+  // Polymarket's last recorded value, when the chart carries on past it with a dashed tail; else null.
+  const heldFrom = p => p.tail ? p.recorded : null;
+  const estNow = p => p.est && p.tail ? p.tail[p.tail.length - 1][1] : null;
   const niceStep = raw => {
     const k = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / k;
     return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * k;
@@ -486,6 +524,7 @@ JS = r"""
   }
 
   const fig = root.querySelector('.pnl-v'), lab = root.querySelector('.pnl-k');
+  const est = root.querySelector('.pnl-est') || lab.insertAdjacentElement('afterend', h('span', 'pnl-est'));
   const tabs = [...root.querySelectorAll('.pnl-tabs button')];
   const plot = root.querySelector('.pnl-plot'), svg = plot.querySelector('svg'), tip = plot.querySelector('.pnl-tip');
   const list = root.querySelector('.pnl-notes');
@@ -500,11 +539,12 @@ JS = r"""
     const m = { l: 58, r: 14, t: 8, b: 26 };
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     svg.setAttribute('height', H);
-    const held = heldFrom(p);
+    const held = heldFrom(p), tail = p.tail || [], now = estNow(p);
     svg.setAttribute('aria-label', `Profit and loss, ${p.label.toLowerCase()}: ${usd(p.change)}`
-      + (held == null ? '' : `, as of Polymarket's last update at ${clock(held, p.t1)}`));
+      + (held == null ? '' : `, as of Polymarket's last update at ${clock(held, p.t1)}`)
+      + (now == null ? '' : `; about ${usd(now)} now, estimated from live prices`));
     svg.replaceChildren();
-    const vs = p.line.map(q => q[1]);
+    const vs = p.line.concat(tail).map(q => q[1]);
     let lo = Math.min(0, ...vs), hi = Math.max(0, ...vs);
     if (hi - lo < 1) hi = lo + 1;
     const y0 = lo - (hi - lo) * 0.08, y1 = hi + (hi - lo) * (W < 560 ? 0.1 : 0.24);  // headroom for the callouts
@@ -525,31 +565,25 @@ JS = r"""
 
     const pts = p.line.map(([t, v]) => [x(t), y(v)]);
     const d = smooth(pts), last = pts[pts.length - 1];
-    // After Polymarket's last recorded value the line only repeats it: that tail is dashed, with no area under it.
-    const k = held == null ? -1 : Math.max(p.line.findIndex(q => q[0] >= held), 0), hx = k < 0 ? null : pts[k][0];
-    const known = {};
-    if (hx != null) {
-      const defs = el('defs', {}, svg);
-      el('rect', { x: 0, y: 0, width: hx, height: H }, el('clipPath', { id: 'pnl-known' }, defs));
-      el('rect', { x: hx, y: 0, width: W - hx, height: H }, el('clipPath', { id: 'pnl-held' }, defs));
-      known['clip-path'] = 'url(#pnl-known)';
-    }
-    el('path', { d: `${d}L${last[0].toFixed(1)},${y(0).toFixed(1)}L${pts[0][0].toFixed(1)},${y(0).toFixed(1)}Z`, class: 'area', ...known }, svg);
+    // After Polymarket's last recorded value a dashed tail: the estimate from live prices, or the value held flat.
+    const tpts = tail.map(([t, v]) => [x(t), y(v)]), hx = tpts.length ? tpts[0][0] : null;
+    const trace = tpts.length ? pts.concat(tpts.slice(1)) : pts;  // all of the drawn line, to keep labels clear of it
+    el('path', { d: `${d}L${last[0].toFixed(1)},${y(0).toFixed(1)}L${pts[0][0].toFixed(1)},${y(0).toFixed(1)}Z`, class: 'area' }, svg);
     const bands = p.notes.map(n => el('rect', { x: x(n.t0), y: m.t, width: Math.max(x(n.t1) - x(n.t0), 2), height: H - m.t - m.b, class: 'band' }, svg));
-    el('path', { d, class: 'line', ...known }, svg);
-    if (hx != null) el('path', { d, class: 'line held', 'clip-path': 'url(#pnl-held)' }, svg);
-    const end = hx != null ? pts[k] : last;
-    el('circle', { cx: end[0], cy: end[1], r: 4, class: 'end' }, svg);
+    el('path', { d, class: 'line' }, svg);
+    if (tpts.length) el('path', { d: smooth(tpts), class: 'line held' }, svg);
+    el('circle', { cx: last[0], cy: last[1], r: 4, class: 'end' }, svg);
+    if (now != null) el('circle', { cx: tpts[tpts.length - 1][0], cy: tpts[tpts.length - 1][1], r: 4, class: 'end est' }, svg);
 
     // Height of the drawn line over a stretch of x, so a callout can sit clear of it.
     const lineSpan = (xa, xb) => {
       let mn = Infinity, mx = -Infinity;
       const see = v => { mn = Math.min(mn, v); mx = Math.max(mx, v); };
-      for (let i = 0; i < pts.length; i++) {
-        const [px, py] = pts[i];
+      for (let i = 0; i < trace.length; i++) {
+        const [px, py] = trace[i];
         if (px >= xa && px <= xb) see(py);
-        if (i && pts[i - 1][0] < xb && px > xa) {  // segment crossing an edge of the stretch
-          const [qx, qy] = pts[i - 1];
+        if (i && trace[i - 1][0] < xb && px > xa) {  // segment crossing an edge of the stretch
+          const [qx, qy] = trace[i - 1];
           for (const e of [xa, xb]) if (e > qx && e < px) see(qy + (py - qy) * (e - qx) / (px - qx));
         }
       }
@@ -557,11 +591,11 @@ JS = r"""
     };
 
     const lineAt = px => {
-      for (let i = 1; i < pts.length; i++) if (pts[i][0] >= px) {
-        const [qx, qy] = pts[i - 1], [rx, ry] = pts[i];
+      for (let i = 1; i < trace.length; i++) if (trace[i][0] >= px) {
+        const [qx, qy] = trace[i - 1], [rx, ry] = trace[i];
         return qy + (ry - qy) * (px - qx) / Math.max(rx - qx, 1e-6);
       }
-      return last[1];
+      return trace[trace.length - 1][1];
     };
     // Badges sit on the line where their swing passes halfway; one that would cover an earlier badge slides along the line.
     const R = 9, spots = [];
@@ -576,11 +610,13 @@ JS = r"""
     const hits = b => taken.some(o => b.x0 < o.x1 + 5 && b.x1 > o.x0 - 5 && b.y0 < o.y1 + 4 && b.y1 > o.y0 - 4);
     const leaders = el('g', {}, svg), badges = el('g', {}, svg), callouts = el('g', {}, svg);
     if (hx != null) {
-      // Says why the tail runs flat: over the dashed stretch when it fits, else ending at the chart's right edge.
+      // Says what the dashed tail is: over it when it fits, else ending at the chart's right edge.
       // A narrow chart gets the short wording.
       const g = el('g', { class: 'stale' }, svg), txt = el('text', {}, g), since = clock(held, p.t1), ht = 14;
+      const words = p.est ? [`Estimated from live prices since ${since}`, `Estimate since ${since}`]
+        : [`No update from Polymarket since ${since}`, `No update since ${since}`];
       let spot = null;
-      for (const s of [`No update from Polymarket since ${since}`, `No update since ${since}`]) {
+      for (const s of words) {
         txt.textContent = s;
         const w = txt.getComputedTextLength(), room = W - m.r - hx;
         const bx = Math.max(room >= w + 24 ? hx + (room - w) / 2 : W - 4 - w, m.l + 2);  // may use the right margin
@@ -593,7 +629,7 @@ JS = r"""
     }
     lit = p.notes.map((n, i) => {
       const [ax, ay] = spots[i];
-      const g = el('g', { class: 'badge', tabindex: 0, role: 'img', 'aria-label': `Swing ${i + 1}: ${usd(n.d)}, ${range(p, n.t0, n.t1)}` }, badges);
+      const g = el('g', { class: 'badge', tabindex: 0, role: 'img', 'aria-label': `${n.est ? `${i + 1}, estimated since the last update` : `Swing ${i + 1}`}: ${usd(n.d)}, ${range(p, n.t0, n.t1)}` }, badges);
       el('circle', { cx: ax, cy: ay, r: R }, g);
       el('text', { x: ax, y: ay + 4 }, g, i + 1);
       g.addEventListener('pointerenter', () => light(i, true));
@@ -606,8 +642,9 @@ JS = r"""
       // Callout: the swing's size and its biggest driver, at the free spot nearest the badge.
       const [ax, ay] = spots[i];
       const g = el('g', { class: 'callout' }, callouts);
-      const amt = el('text', { class: 'amt ' + tone(n.d) }, g, usd(n.d, 0));
-      const who = n.drivers.length ? el('text', { class: 'who' }, g, n.drivers[0].short) : null;
+      const amt = el('text', { class: 'amt ' + tone(n.d) }, g, (n.est ? '≈ ' : '') + usd(n.d, 0));
+      const lead = n.drivers.find(r => r.d * n.d > 0);  // the estimate's drivers run both ways: name one with its sign
+      const who = lead ? el('text', { class: 'who' }, g, lead.short) : null;
       const w = Math.max(amt.getComputedTextLength(), who ? who.getComputedTextLength() : 0), ht = who ? 30 : 15;
       let best = null;
       for (const bx of [ax - 14 - w, ax + 14, ax - w / 2, ax - 14 - w * 0.75, ax + 14 - w * 0.25]) {
@@ -644,8 +681,9 @@ JS = r"""
       const li = h('li', '', list);
       h('span', 'pnl-n', li, i + 1);
       const what = h('div', 'pnl-what', li);
-      h('b', tone(n.d), what, usd(n.d));
+      h('b', tone(n.d), what, (n.est ? '≈ ' : '') + usd(n.d));
       h('span', 'pnl-when', what, range(p, n.t0, n.t1));
+      if (n.est) h('span', 'pnl-tag', what, 'estimated from live prices, since Polymarket\'s last update');
       const why = h('div', 'pnl-why', li);
       for (const r of n.drivers) {
         const row = h('div', 'pnl-drv', why), name = h('div', '', row), num = h('div', 'pnl-num', row);
@@ -668,8 +706,12 @@ JS = r"""
     const p = byKey[cur];
     fig.textContent = usd(p.change);
     fig.className = 'pnl-v ' + tone(p.change);
-    const held = heldFrom(p);
+    const held = heldFrom(p), now = estNow(p);
     lab.textContent = p.label + (held == null ? '' : `, as of ${clock(held, p.t1)}`);
+    est.textContent = now == null ? '' : `≈ ${usd(now)} now`;
+    est.className = 'pnl-est ' + (now == null ? '' : tone(now));
+    est.title = now == null ? '' : `Estimated: Polymarket's last recorded P/L (${clock(held, p.t1)}), moved by what each position has `
+      + 'done since at the latest prices. It has matched what Polymarket later recorded to about $8, $30-odd at worst.';
     tabs.forEach(b => { const on = b.dataset.k === cur; b.setAttribute('aria-selected', on); b.tabIndex = on ? 0 : -1; });
     plot.classList.remove('on'); tip.hidden = true;
     drawChart(p);
@@ -682,16 +724,16 @@ JS = r"""
     const px = (e.clientX - r.left) / r.width * W;
     let t = p.t0 + (px - m.l) / (W - m.l - m.r) * (p.t1 - p.t0);
     t = Math.min(Math.max(Math.round(t / 3600) * 3600, p.t0), p.t1);
-    let v = p.line[0][1];
-    for (const q of p.line) { if (q[0] <= t) v = q[1]; else break; }
+    const inTail = p.tail && t > p.tail[0][0], seq = inTail ? p.tail : p.line;
+    let v = seq[0][1];
+    for (const q of seq) { if (q[0] <= t) v = q[1]; else break; }
     const cx = x(t), cy = y(v), c = parts(t);
     cross.setAttribute('x1', cx); cross.setAttribute('x2', cx);
     dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
     tip.replaceChildren();
     h('span', 't', tip, `${c.wd} ${c.d} ${c.mon} ${c.hm}`);
-    h('b', tone(v), tip, usd(v));
-    const held = heldFrom(p);
-    if (held != null && t > held) h('span', 'held', tip, `no update since ${clock(held, p.t1)}`);
+    h('b', tone(v), tip, (inTail && p.est ? '≈ ' : '') + usd(v));
+    if (inTail) h('span', 'held', tip, p.est ? 'estimated' : `no update since ${clock(p.recorded, p.t1)}`);
     tip.style.left = Math.min(Math.max(cx, 70), W - 70) / W * r.width + 'px';
     tip.style.top = cy / svg.viewBox.baseVal.height * r.height + 'px';
     tip.hidden = false;
@@ -862,7 +904,8 @@ JS = r"""
       const p = price(tok, t);
       return [h, p, c + (Math.abs(h) > 1e-6 && p != null ? h * p : 0)];
     };
-    return function drivers(t0, t1) {  // positions ranked by how much their P/L changed between t0 and t1
+    const total = t => { let s = 0; for (const tok of events.keys()) s += state(tok, t)[2]; return s; };  // all positions' P/L
+    return { total, drivers(t0, t1) {  // positions ranked by how much their P/L changed between t0 and t1
       const out = [];
       for (const [tok, evs] of events) {
         let [h0, p0, v0] = state(tok, t0), [h1, p1, v1] = state(tok, t1);
@@ -877,12 +920,19 @@ JS = r"""
                    url: a.event_slug ? `https://polymarket.com/event/${a.event_slug}` : '' });
       }
       return out.sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
-    };
+    } };
+  }
+
+  function tailNote(book, tail) {  // the estimated stretch as one more note, with what moved most since, either way
+    const [ta, va] = tail[0], [tb, vb] = tail[tail.length - 1], d = vb - va;
+    const shown = book.drivers(ta, tb).slice(0, cfg.tailDrivers);
+    const mid = tail.slice(1).reduce((b, q) => Math.abs(q[0] - (ta + tb) / 2) < Math.abs(b[0] - (ta + tb) / 2) ? q : b);
+    return { t0: ta, t1: tb, d, drivers: shown, rest: d - shown.reduce((s, r) => s + r.d, 0), est: true, at: mid[0], v: mid[1] };
   }
 
   async function build(progress) {
     const now = Math.floor(Date.now() / 1000);
-    const [res, drivers] = await Promise.all([
+    const [res, book] = await Promise.all([
       get(`${DATA}/user-pnl?user=${cfg.wallet}&interval=all&fidelity=1h`),
       makeBook(now, progress).catch(e => { console.warn(`pnl: swings left unexplained (${e.message})`); return null; }),
     ]);
@@ -891,6 +941,15 @@ JS = r"""
     const snaps = [];  // the hours on which the API recorded a new value
     let block = {};
     for (const x of points) if (x.source_block !== block) { snaps.push([x.timestamp, x.trade_pnl]); block = x.source_block; }
+    const [recT, recV] = snaps[snaps.length - 1];
+    let tail = null;  // as in build(): once the last recorded value is stale, an estimate to now (or the value held)
+    if (now - recT >= cfg.stale) {
+      const times = [];
+      for (let t = recT; t < now; t += HOUR) times.push(t);
+      times.push(now);
+      if (book) { const atRec = book.total(recT); tail = times.map(t => [t, recV + book.total(t) - atRec]); }
+      else tail = [[recT, recV], [now, recV]];
+    }
     const jan1 = Date.UTC(parts(now).y, 0, 1) / 1000 - HOUR;  // midnight in Copenhagen, which is on CET in January
     const out = cfg.periods.map(([key, label, span]) => {
       let start = key === 'YTD' ? jan1 : span == null ? firstT : lastT - span + HOUR, base;
@@ -906,23 +965,30 @@ JS = r"""
         while (step < b && Math.abs(series[step][1] - series[a][1]) < Math.abs(d) / 2) step++;
         const note = { t0: series[a][0], t1: series[b][0], d, drivers: [], rest: null,
                        at: series[step][0] - HOUR / 2, v: (series[step][1] + series[step - 1][1]) / 2 - base };
-        if (drivers) {
-          const ranked = drivers(series[a][2], series[b][2]), rebuilt = ranked.reduce((s, r) => s + r.d, 0);
+        if (book) {
+          const ranked = book.drivers(series[a][2], series[b][2]), rebuilt = ranked.reduce((s, r) => s + r.d, 0);
           note.drivers = ranked.filter(r => r.d * d > 0 && Math.abs(r.d) >= cfg.driverMin * Math.abs(d)).slice(0, cfg.maxDrivers);
           if (Math.abs(rebuilt - d) <= 0.35 * Math.abs(d)) note.rest = d - note.drivers.reduce((s, r) => s + r.d, 0);
         }
         return [note];
       });
       notes = notes.sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, cfg.maxNotes).sort((x, y) => x.t0 - y.t0);
-      const line = [];  // plateau-and-ramp: each recorded value is held until the hour before the next one
+      let tailP = null;
+      if (tail) {
+        const inside = tail.filter(([t]) => t >= start), ref = recT >= start ? base : inside[0][1];
+        tailP = inside.map(([t, v]) => [t, v - ref]);
+        if (book && tailP[tailP.length - 1][0] > tailP[0][0]) notes.push(tailNote(book, tailP));
+      }
+      const line = [];  // plateau-and-ramp: each recorded value is held until the hour before the next one, a stale last one not
       series.forEach(([t, v], i) => {
         const nxt = i + 1 < series.length ? series[i + 1][0] : lastT + HOUR;
         line.push([t, v - base]);
-        if (nxt - HOUR > t) line.push([nxt - HOUR, v - base]);
+        if (nxt - HOUR > t && !(tail && i === series.length - 1)) line.push([nxt - HOUR, v - base]);
       });
-      return { key, label, t0: start, t1: lastT, recorded: snaps[snaps.length - 1][0], change: lastV - base, line, notes };
+      return { key, label, t0: start, t1: tail ? tail[tail.length - 1][0] : lastT, recorded: recT, change: lastV - base,
+               line, notes, tail: tailP, est: !!(tail && book) };
     });
-    return { periods: out, explained: !!drivers };
+    return { periods: out, explained: !!book };
   }
 
   const btn = root.querySelector('.pnl-refresh');
@@ -968,7 +1034,7 @@ def section(get, pages, wallet, now):
 def refresh_config(wallet):
     """What the card's Refresh button needs to redo build() in the browser: the same constants, rules and names."""
     return dict(wallet=wallet, periods=PERIODS, swing=SWING, quiet=QUIET, moveMin=MOVE_MIN, maxNotes=MAX_NOTES, maxDrivers=MAX_DRIVERS,
-                driverMin=DRIVER_MIN, stale=STALE, workers=WORKERS, nameMax=NAME_MAX, dangling=sorted(DANGLING), deadline=DEADLINE.pattern,
+                driverMin=DRIVER_MIN, stale=STALE, tailDrivers=TAIL_DRIVERS, workers=WORKERS, nameMax=NAME_MAX, dangling=sorted(DANGLING), deadline=DEADLINE.pattern,
                 tighter=TIGHTER, preposition=PREPOSITION.pattern, labels=load_labels())
 
 
@@ -984,9 +1050,10 @@ def render(periods, wallet):
             data.append(dict(key=p['key'], label=p['label'], same=whole['key']))  # the wallet is younger than this window
             continue
         data.append(dict(key=p['key'], label=p['label'], t0=p['t0'], t1=p['t1'], recorded=p['recorded'], change=round(p['change'], 2),
-                         line=[[t, round(v, 2)] for t, v in p['line']],
+                         line=[[t, round(v, 2)] for t, v in p['line']], est=p['est'],
+                         tail=None if p['tail'] is None else [[t, round(v, 2)] for t, v in p['tail']],
                          notes=[dict(t0=n['t0'], t1=n['t1'], at=n['at'], v=round(n['v'], 2), d=round(n['d'], 2),
-                                     rest=None if n['rest'] is None else round(n['rest'], 2),
+                                     rest=None if n['rest'] is None else round(n['rest'], 2), est=bool(n.get('est')),
                                      drivers=[{k: round(v, 2) if k == 'd' else v for k, v in r.items() if k != 'by_rule'}
                                               for r in n['drivers']]) for n in p['notes']]))
     when = lambda t, f='%a %d %b %H:%M': f'{datetime.datetime.fromtimestamp(t):{f}}'
@@ -995,9 +1062,10 @@ def render(periods, wallet):
             f"; {n['d']:+,.0f} {when(n['t0'], '%d %b %H:%M')}–{when(n['t1'], '%d %b %H:%M')}"
             + (f" ({n['drivers'][0]['title'][:38]} {n['drivers'][0]['side']} {n['drivers'][0]['d']:+,.0f})" if n['drivers'] else '')
             for n in (p['notes'] if 'same' not in data[periods.index(p)] else [])))
-    if whole['t1'] - whole['recorded'] >= STALE:
-        print(f"  pnl: Polymarket's P/L last recorded {when(whole['recorded'])}, {(whole['t1'] - whole['recorded']) / HOUR:.0f} h "
-              f"before the chart ends; the line after it is drawn dashed")
+    if whole['tail']:
+        (_, v0), (t1, v1) = whole['tail'][0], whole['tail'][-1]
+        print(f"  pnl: Polymarket's P/L last recorded {when(whole['recorded'])}, {(t1 - whole['recorded']) / HOUR:.0f} h before "
+              + (f"{when(t1, '%H:%M')}; estimated since {v1 - v0:+,.2f}, now {v1:,.2f}" if whole['est'] else 'the chart ends; held flat'))
     for title, short in sorted({(n['drivers'][0]['title'], n['drivers'][0]['short']) for p in periods for n in p['notes']
                                 if n['drivers'] and n['drivers'][0]['by_rule']}):
         print(f'  pnl: callout "{short}" was made by rule; add a name for "{question(title)}" to labels.json to change it')
@@ -1007,7 +1075,7 @@ def render(periods, wallet):
                'and redraw this chart and its swings. The rest of the page stays as built; Refresh prices in the menu does this too.">'
                '<span aria-hidden="true">↻</span><span class="lbl">Refresh</span><span class="when"></span></button>')
     return (f'<section class="pnl" id="pnl" aria-label="Profit and loss">'
-            f'<div class="pnl-head"><div><h2>Profit/Loss</h2><span class="pnl-v"></span><span class="pnl-k"></span></div>'
+            f'<div class="pnl-head"><div><h2>Profit/Loss</h2><span class="pnl-v"></span><span class="pnl-k"></span><span class="pnl-est"></span></div>'
             f'<div class="pnl-ctl">{refresh}<div class="pnl-tabs" role="tablist" aria-label="Period">{tabs}</div></div></div>'
             '<div class="pnl-plot"><svg role="img"></svg><div class="pnl-tip" hidden></div></div>'
             '<ol class="pnl-notes"></ol>'
