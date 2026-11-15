@@ -220,7 +220,7 @@ redeem_value = sum(r['value'] for r in resolved)
 
 HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build ...
 HUNT_SECTION = os.path.join(HERE, 'hunt', 'work', 'section.html')  # ... with the page's Mispricing hunt section ...
-HUNT_NAV = os.path.join(HERE, 'hunt', 'work', 'nav.json')  # ... and its tabs and Refresh prices button for the top menu
+HUNT_NAV = os.path.join(HERE, 'hunt', 'work', 'nav.json')  # ... and its tabs and Refresh button for the top menu
 
 
 def load_hunt():
@@ -477,7 +477,7 @@ def hunt_section():
 
 
 def hunt_nav():
-    """The hunt's tabs and Refresh prices button for the top menu (hunt/hunt.py build writes them with the section)."""
+    """The hunt's tabs and Refresh button for the top menu (hunt/hunt.py build writes them with the section)."""
     if not hunt_html:
         return [], ''
     try:
@@ -702,7 +702,7 @@ h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw,
 .topnav .tabs a[aria-current] span {{ background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }}
 .topnav .sep {{ flex: none; width: 1px; margin: 12px 8px; background: var(--rule); }}
 #summary, #pnl, #positions, #weather, #closed {{ scroll-margin-top: 64px; }}
-/* the hunt's Refresh prices button (hunt/hunt.py's REFRESH_JS runs it), styled here so it is ready at first paint */
+/* the page's Refresh button (hunt/hunt.py's REFRESH_JS runs it, and pnl.py's JS redraws the P/L card on it), styled here so it is ready at first paint */
 #hunt-refresh {{ flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
                  font: 600 13px var(--body); color: var(--accent); background: var(--surface); cursor: pointer;
                  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; }}
