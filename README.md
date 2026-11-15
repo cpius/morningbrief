@@ -20,8 +20,12 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   The card's Refresh button redoes `build()` in the browser (a JavaScript copy in `pnl.py`'s `JS`, fed the same
   constants, rules and labels through `#pnl-cfg`), so a change to the Python build needs the same change there.
   The hunt's Refresh prices in the top menu presses it too. The API records a new P/L value only every few hours
-  (often 5–13 h apart); once the last one is `STALE` (3 h) old, the line after it is dashed, the headline reads
-  "as of" that time and the chart says when Polymarket last updated. Price histories are fetched `WORKERS` (8) at once.
+  (often 5–13 h apart). Once the last one is `STALE` (3 h) old, the line carries on as a dashed estimate to now:
+  that value, moved hour by hour by what every position has done since (`Book.total()`, the same fills and prices
+  as the swings). The headline reads "as of" the last value with "≈ … now" beside it, and a last note lists the
+  positions that moved most since, either way (`TAIL_DRIVERS`). Against Polymarket's own steps on 1–15 Nov the
+  estimate was off by $8 typically and $32 at most, with no drift. If the positions can't be rebuilt, the tail is
+  the last value held flat ("No update from Polymarket since …"). Price histories are fetched `WORKERS` (8) at once.
   The chart's callouts use the short names in `labels.json` (market question without its deadline → name, e.g.
   "Supreme Court vacancy"). A market missing from it gets a rule-made name and a `pnl: callout ... was made by rule`
   line in the output; add an entry to fix a clumsy one.
