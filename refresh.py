@@ -490,13 +490,13 @@ def hunt_nav():
 
 
 def top_menu():
-    """The menu at the top of the page: a tab per section, the hunt's parts among them, in page order. It sticks to the
-    top of the window while the page scrolls, and NAV_JS lights the tab of the section being read."""
+    """The menu at the top of the page: a tab per main section, the hunt's main parts among them, in page order (no
+    Weather or Closed tabs since 17 Nov, at Mads's request). It sticks to the top of the window while the page scrolls,
+    and NAV_JS lights the tab of the section being read."""
     tabs, button = hunt_nav()
     groups = [[('Summary', 'summary', None)] + ([('Profit/Loss', 'pnl', None)] if pnl_html else []) +
               [('Positions', 'positions', len(open_rows))],
-              tabs,
-              [('Weather', 'weather', None)] + ([('Closed', 'closed', len(closed))] if closed else [])]
+              tabs]
     tab = lambda label, to, n: f'<a href="#{to}">{html.escape(label)}{f"<span>{n}</span>" if n is not None else ""}</a>'
     sep = '<span class="sep" aria-hidden="true"></span>'
     return (f'<nav class="topnav" aria-label="Sections"><div class="tabs">'
@@ -599,30 +599,39 @@ NAV_JS = r"""<script>
 (() => {
   const bar = document.querySelector('.topnav'), nav = bar && bar.querySelector('.tabs');
   if (!nav) return;
-  const links = [...nav.querySelectorAll('a')];
-  const targets = links.map(a => document.getElementById(a.hash.slice(1)));
-  let pinned = null, queued = false;
-  const light = i => {
+  let links = [], targets = [], pinned = null, queued = false;  // pinned: the tab just clicked, lit until the reader scrolls
+  const scan = () => {
+    links = [...nav.querySelectorAll('a')];
+    targets = links.map(a => document.getElementById(a.hash.slice(1)));
+  };
+  scan();
+  const light = i => {  // i < 0: no tab
     links.forEach((a, j) => j === i ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'));
+    if (i < 0) return;
     const a = links[i], l = a.offsetLeft, r = l + a.offsetWidth;  // keep the lit tab in view when the tabs scroll sideways
     if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = l - 8;
   };
   const update = () => {
     queued = false;
-    if (pinned !== null) return light(pinned);
+    if (pinned && pinned.isConnected) return light(links.indexOf(pinned));
     const line = bar.getBoundingClientRect().bottom + 32;
     let i = 0;
     targets.forEach((t, j) => { if (t && t.getBoundingClientRect().top <= line) i = j; });
     if (innerHeight + scrollY >= document.documentElement.scrollHeight - 2)  // at the bottom: short last sections never reach the line
       targets.forEach((t, j) => { if (t && t.getBoundingClientRect().top < innerHeight - 48) i = Math.max(i, j); });
+    // past the end of that tab's part (into a part with no tab: Slower, Dropped, the weather), light the tab of the part
+    // around it (Hunt), or none
+    const past = t => t.getBoundingClientRect().bottom <= line, last = targets[i];
+    if (last && past(last)) i = targets.findIndex(t => t && t !== last && t.contains(last) && !past(t));
     if (bar.getBoundingClientRect().top > 1) i = 0;  // the menu hasn't stuck yet: still at the top
     light(i);
   };
-  links.forEach((a, j) => a.addEventListener('click', () => { pinned = j; light(j); }));
+  nav.addEventListener('click', e => { const a = e.target.closest('a'); if (a) { pinned = a; light(links.indexOf(a)); } });
   ['wheel', 'touchstart', 'keydown'].forEach(ev => addEventListener(ev, () => { pinned = null; }, { passive: true }));
   addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(update); } }, { passive: true });
-  const hashed = links.findIndex(a => a.hash === location.hash);
-  if (hashed >= 0) pinned = hashed;
+  // the hunt's Refresh adds a Biggest moves tab while its card shows, and the card's × takes it away
+  new MutationObserver(() => { scan(); update(); }).observe(nav, { childList: true });
+  pinned = links.find(a => a.hash === location.hash) || null;
   update();
   // A link straight to a section (/#hunt-main, the old /hunt/ address) lands short: the browser scrolls to it before the
   // P/L card draws its chart and notes, which push everything below down. Jump again once the page has settled

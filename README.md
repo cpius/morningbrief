@@ -8,9 +8,10 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   `portfolio.html` and `site/index.html`. It uses only the standard library. The page is the summary, the
   Profit/Loss card, the positions table, the Mispricing hunt (if `hunt/hunt.py build` ran today, its section from
   `hunt/work/section.html`), the weather and positions closed in the last 24h, with a link to the run log at the foot.
-  A menu between the header and the summary (`top_menu()`) has a tab per section, the hunt's parts among them (from
-  `hunt/work/nav.json`), and the page's Refresh button (the hunt's). It sticks to the top of the window, and `NAV_JS` lights
-  the tab of the section being read. Every part of the page shares one column, up to 1304px wide.
+  A menu between the header and the summary (`top_menu()`) has a tab per main section, the hunt's main parts among them
+  (from `hunt/work/nav.json`; the main list's tab is "Picks"), and the page's Refresh button (the hunt's). Slower, Dropped,
+  Weather and Closed have no tab. It sticks to the top of the window, and `NAV_JS` lights the tab of the section being
+  read: in a part without one, the tab of the part around it (Hunt), or none. Every part of the page shares one column, up to 1304px wide.
   Trades and the biggest movers are printed (`trade:` and `mover:` lines) for the routine's summary, not shown.
 - `pnl.py` builds the Profit/Loss card under the summary: the line polymarket.com plots (`trade_pnl` from
   `/v2/user-pnl`) for 1D, 1W, 1M, 1Y, YTD and ALL, with each period's largest swings numbered on the chart and
@@ -159,7 +160,8 @@ row (the other side sits under the row's price) and redoes the returns and Rec a
 edge then measured against the build. It also redraws the Profit/Loss card. The prices that moved most
 (since the build, then since the last refresh) show in a "Biggest moves" card under the Profit/Loss card: it ships
 hidden in the hunt section (`#hunt-moves`, with its own rules outside `#hunt`), and `REFRESH_JS` moves it up there and
-shows it after the first refresh; × hides it until the next one. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
+shows it after the first refresh, with a "Biggest moves" tab after Profit/Loss in the top menu (`NAV_JS` rescans its
+tabs when one is added); × hides the card and its tab until the next one. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
 `advice()`, so a rule change needs the same change there.
 
 Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved".

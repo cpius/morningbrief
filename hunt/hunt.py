@@ -1144,7 +1144,8 @@ def render(st, main, extra, noask, held):
             f'{" (held)" if p.get("held") else ""}</li>' for p in st['resolved']) +
             '</ul></div>')
     boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
-    # the hunt's tabs in the page's top menu: one per part of the section, in page order, with its count
+    # the hunt's tabs in the page's top menu, in page order, with their counts: the main parts of the section
+    # (Slower and Dropped have none, at Mads's request on 17 Nov; the main list's tab is "Picks")
     tabs = [('Hunt', 'hunt', None)]
     if st['notes']:
         tabs.append(('What changed', 'hunt-changes', None))
@@ -1152,13 +1153,9 @@ def render(st, main, extra, noask, held):
         tabs.append(('Resolved', 'hunt-resolved', len(st['resolved'])))
     if held:
         tabs.append(('Hold vs sell', 'hunt-positions', len(held)))
-    tabs.append(('Main list', 'hunt-main', len(main)))
-    if extra:
-        tabs.append(('Slower', 'hunt-slower', len(extra)))
+    tabs.append(('Picks', 'hunt-main', len(main)))
     if noask:
         tabs.append(('No sellers', 'hunt-noask', len(noask)))
-    if st['dropped']:
-        tabs.append(('Dropped', 'hunt-dropped', len(st['dropped'])))
     button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'data-wallet="{WALLET}" '
@@ -1585,6 +1582,10 @@ REFRESH_JS = r"""
   const box = document.getElementById('hunt-moves'), seen = new Map(), TOP = 10;
   const spot = document.getElementById('pnl') || document.getElementById('summary');
   if (box && spot) spot.after(box);
+  // While the card shows, the top menu has a tab for it, after the tab of the card it sits under (NAV_JS lights it)
+  const after = box && spot && document.querySelector(`.topnav .tabs a[href="#${spot.id}"]`);
+  const tab = Object.assign(document.createElement('a'), { href: '#hunt-moves', textContent: 'Biggest moves' });
+  const showTab = on => { if (!after) return; if (!on) tab.remove(); else if (!tab.isConnected) after.after(tab); };
   let sinceText = `the page was built at ${btn.dataset.built}`;
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const num = s => s === '' || s == null || isNaN(+s) ? null : +s;
@@ -1620,9 +1621,9 @@ REFRESH_JS = r"""
     box.querySelector('#moves-foot').textContent = uniq.length
       ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position. Fair is my estimate from the build, not redone.`
       : '';
-    box.hidden = false;
+    box.hidden = false; showTab(true);
   };
-  if (box) box.querySelector('#moves-close').addEventListener('click', () => { box.hidden = true; });
+  if (box) box.querySelector('#moves-close').addEventListener('click', () => { box.hidden = true; showTab(false); });
   const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('hunt-asks-at');
   btn.addEventListener('click', async () => {
     const rows = [...document.querySelectorAll('#hunt [data-token]')];
