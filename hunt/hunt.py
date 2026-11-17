@@ -1094,7 +1094,7 @@ def held_row_html(i, p, h):
         hvs = per_yr = edge = '<span class="faint">–</span>'
     why = f'<p class="why">{esc(p["why"])}</p>' if p.get('why') else ''
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr {live_attrs(p)} data-size="{d['size']}">
+    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-avg="{d['avg']}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
   <td class="rec" data-k="Rec">{rec_cell(p)}</td>
@@ -1604,7 +1604,9 @@ REFRESH_JS = r"""
       const tone = m.good ? 'up' : 'down';
       const d = m.d == null ? (m.now == null ? 'gone' : 'new')
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
-      const sub = [m.side, m.kind === 'bid' ? 'your position, best bid' : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '',
+      // a position: what it cost and its average entry, e.g. "$309 held @ 0.42"
+      const held = m.own && m.own.size > 0 && m.own.avg > 0 ? `$${Math.round(m.own.size * m.own.avg).toLocaleString('en-US')} held @ ${px(m.own.avg)}` : 'held';
+      const sub = [m.side, m.kind === 'bid' ? `${held}, best bid` : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '',
                    m.rec].filter(Boolean).join(' · ');
       // the market on Polymarket, in a new tab so the refreshed prices stay on screen
       return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
@@ -1652,8 +1654,10 @@ REFRESH_JS = r"""
         const call = tr && cell(el, 'Rec') && cell(el, 'Rec').querySelector('b');
         const fair = num(el.dataset.fair), end = el.dataset.end, hold = el.dataset.hold === '1';
         const ann = fair == null || now == null ? '' : pct(kind === 'bid' ? holdEcon(now, fair, end, hold, 0).ann : econ(now, fair, end, hold).ann);
+        // shares and average entry: the wallet now, else the build's (a position row's data-size/data-avg)
+        const own = kind !== 'bid' ? null : (pos && pos.get(el.dataset.token)) || { size: num(el.dataset.size), avg: num(el.dataset.avg) };
         moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
-                     fair, href: a ? a.getAttribute('href') : '#',
+                     fair, own, href: a ? a.getAttribute('href') : '#',
                      name: a ? a.textContent : '', side: side ? side.textContent : '', ann,
                      rec: call ? call.textContent : '' });
       }
