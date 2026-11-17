@@ -9,7 +9,7 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   Profit/Loss card, the positions table, the Mispricing hunt (if `hunt/hunt.py build` ran today, its section from
   `hunt/work/section.html`), the weather and positions closed in the last 24h, with a link to the run log at the foot.
   A menu between the header and the summary (`top_menu()`) has a tab per main section, the hunt's main parts among them
-  (from `hunt/work/nav.json`; the main list's tab is "Picks"), and the page's Refresh button (the hunt's). Slower, Dropped,
+  (from `hunt/work/nav.json`; the main list is "Picks" in its tab and heading), and the page's Refresh button (the hunt's). Slower, Dropped,
   Weather and Closed have no tab. It sticks to the top of the window, and `NAV_JS` lights the tab of the section being
   read: in a part without one, the tab of the part around it (Hunt), or none. Every part of the page shares one column, up to 1304px wide.
   Trades and the biggest movers are printed (`trade:` and `mover:` lines) for the routine's summary, not shown.

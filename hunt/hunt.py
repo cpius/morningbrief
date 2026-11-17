@@ -1112,7 +1112,7 @@ def held_row_html(i, p, h):
 def held_table_html(held):
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>'
             '<th class="rec" title="Edge reversed, sell: bid more than 3% over fair. Edge gone, reduce: bid at fair up to '
-            '3% over. Expand: below fair, and buying more at the ask would make the main list. Keep: below fair. Bigger or '
+            '3% over. Expand: below fair, and buying more at the ask would make Picks. Keep: below fair. Bigger or '
             'smaller edge first when hold vs sell moved since the last run (after a refresh, since the build).">Rec</th>'
             '<th>Shares</th><th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>'
             '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th>'
@@ -1145,7 +1145,7 @@ def render(st, main, extra, noask, held):
             '</ul></div>')
     boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
     # the hunt's tabs in the page's top menu, in page order, with their counts: the main parts of the section
-    # (Slower and Dropped have none, at Mads's request on 17 Nov; the main list's tab is "Picks")
+    # (Slower and Dropped have none, at Mads's request on 17 Nov; the main list is "Picks" in its tab and heading)
     tabs = [('Hunt', 'hunt', None)]
     if st['notes']:
         tabs.append(('What changed', 'hunt-changes', None))
@@ -1187,15 +1187,15 @@ def render(st, main, extra, noask, held):
                      'my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares × (fair + reward − bid). '
                      f'<b>Rec</b>: <b>Edge reversed, sell</b> when the bid is more than {MIN_EDGE * 100:.0f}% over fair '
                      f'(outside a fair value\'s own error); <b>Edge gone, reduce</b> when it is at fair up to {MIN_EDGE * 100:.0f}% over; '
-                     f'<b>Expand</b> when it is below fair and buying more at the ask would make the main list ({MAIN_ANN * 100:.0f}% a year); '
+                     f'<b>Expand</b> when it is below fair and buying more at the ask would make Picks ({MAIN_ANN * 100:.0f}% a year); '
                      '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
                      'bigger or smaller since the last run. Sorted by Per yr, lowest first.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
     rest = len(main) - len(fresh)
-    main_h2 = (f'Main list: today\'s {len(fresh)} new pick{"s" * (len(fresh) != 1)} first, then {rest} returning at least '
+    main_h2 = (f'Picks: today\'s {len(fresh)} new {"ones" if len(fresh) != 1 else "one"} first, then {rest} returning at least '
                f'{MAIN_ANN * 100:.0f}% a year' if fresh else
-               f'Main list: {len(main)} picks returning at least {MAIN_ANN * 100:.0f}% a year')
+               f'Picks: {len(main)} returning at least {MAIN_ANN * 100:.0f}% a year')
     extra_html = (f'<section id="hunt-slower"><h3>Slower picks ({MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year)</h3>{table_html(extra)}</section>'
                   if extra else '')
     new = [p for p, _ in rows if p.get('added') == str(TODAY)]
@@ -1373,7 +1373,7 @@ def render(st, main, extra, noask, held):
     <div class="hunt-stamp"><span id="hunt-asks-at">Prices at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
   </div>
   <div class="summary" role="group" aria-label="Hunt summary">
-    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#hunt-main">{n_fast}</a></span><span class="s"><a href="#hunt-main">main list</a></span></div>
+    <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#hunt-main">{n_fast}</a></span><span class="s"><a href="#hunt-main">picks</a></span></div>
     <div class="stat"><span class="k">Slower picks</span><span class="v">{jump(n_slow, n_slow, "#hunt-slower" if extra else "#hunt-main")}</span><span class="s">{MIN_ANN * 100:.0f}–{MAIN_ANN * 100:.0f}% a year</span></div>
     <div class="stat goldk"><span class="k">Earn 3.25% APR</span><span class="v">{n_hold}</span><span class="s">gold badge</span></div>
     <div class="stat"><span class="k">Your positions</span><span class="v"><a href="#hunt-positions">{len(held)}</a></span><span class="s">{above} with the bid above fair</span></div>
@@ -1397,7 +1397,7 @@ def render(st, main, extra, noask, held):
     research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
     a dollar would make in 12 months if bets like this one kept paying the same (simple, not compounded). The lists are
-    ranked by it, except that today's new picks open the main list whatever their rate, slower ones included. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
+    ranked by it, except that today's new picks open Picks whatever their rate, slower ones included. Picks ending within {ANN_MIN_DAYS} days count as {ANN_MIN_DAYS} days, so the last days before resolution
     don't blow the rate up. A pick leaves the book below {MIN_ANN * 100:.0f}% a year or below
     +{MIN_EDGE * 100:.0f}% to resolution, which is inside a fair value's own error.
     <b>Depth</b> is the dollars on offer at or within 2¢ of the ask.</p>
