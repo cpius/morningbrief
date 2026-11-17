@@ -256,5 +256,35 @@
   "at": "2026-11-17T01:03",
   "fair": 0.92,
   "why": "Update 17 Nov: fair YES ~8% (was 4%) vs market 16.8%. YES jumped from 5.9% at 15:00 UTC on 16 Nov after Trump said as he left for Asia: 'We might have Kim Jong Un. He may come, I don't know. That's up to President Xi.' Trump, Xi and Putin meet in Shenzhen at 14:30 on Thu 19 Nov. Against: a US official told ABC there are no plans to engage North Korea on this trip (the White House said on 13 Nov no Kim meeting was planned); Pyongyang says it won't meet Trump for now and hasn't answered; the Oct 2025 Asia-trip tease came to nothing. For: the 2019 DMZ meeting was set up in ~30 hours; Kim aide Jo Yong Won saw Putin in Moscow on 16 Nov. ~6-7% for Shenzhen this week + 1-2% for the rest of 2026. Taker flow since the jump leaned NO ($10.0k vs $5.1k YES), so market makers repriced. Profitable wallets bought only small YES lottery tickets (Car +$1.58M: $321 at 7c). Watch for Kim's train at Dandong or an Air Koryo flight; if he doesn't come by Friday, YES should fall back to ~5-6%."
+ },
+ {
+  "id": "6617839",
+  "at": "2026-11-17T09:30",
+  "fair": 0.995,
+  "why": "Deep dive 17 Nov: fair YES ~0.5% vs market 9%. YES needs PortWatch's 7-day average on 30 Nov to be 35+. It has not reached 31 since 1 Sep (max 30.6), was 26.3 on 8 Nov, and JMIC's daily counts imply about 20 a day for 9-14 Nov, a three-year low. The Maersk/Hapag-Lloyd Suez returns start 4 Dec, after the window."
+ },
+ {
+  "id": "7029376",
+  "at": "2026-11-17T09:30",
+  "fair": 0.93,
+  "why": "Deep dive 17 Nov: fair YES ~7% vs market 13% (was 6%, which sat below the Dec 31 rung). Closed means a PortWatch 7-day average of 10 or less; the lowest since Jan 2024 is 23.7 (1 Sep 2026), no day has been under 13 and the worst one-week drop was -33%. Traffic is falling (JMIC implies ~20 a day for 9-14 Nov; Houthis retook Dhubab 15 Nov; US-Iran fire 15-16 Nov), so the paths are a US-Iran war the Houthis join with a declared closure, or a campaign on Saudi-linked ships that empties the strait. Fair ~4% by Dec 31, 7% by Jan 31, 12% by Mar 31."
+ },
+ {
+  "id": "6424268",
+  "at": "2026-11-17T09:30",
+  "fair": 0.9,
+  "why": "Deep dive 17 Nov: fair YES ~10% vs market 15%. No confirmed Houthi hit on a merchant ship since 24 Aug, and every 'Houthis hit shipping' rung from 11 Sep on resolved NO, through the Saudi-shipping ban (20 Jul) and the Hormuz closure. The risk is real but short: the Houthis hold the Dhubab coast since 15 Nov, name Saudi-linked hulls as targets, and the US-Iran exchange of 15-16 Nov could pull them in; 13 days left."
+ },
+ {
+  "id": "7029358",
+  "at": "2026-11-17T09:30",
+  "fair": 0.975,
+  "why": "Deep dive 17 Nov: fair YES ~2.5% vs market 5%. A zero-transit day needs Bab el-Mandeb traffic to stop completely; PortWatch has had no day under 13 since Jan 2024, even in the 2024 campaign. Today's ~20 a day (JMIC, 9-14 Nov) is a three-year low but far from zero; only a declared, enforced closure in a US-Iran war gets there by 31 Jan."
+ },
+ {
+  "id": "7029359",
+  "at": "2026-11-17T09:30",
+  "fair": 0.96,
+  "why": "Deep dive 17 Nov: fair YES ~4% vs market 24%. A zero-transit day needs Bab el-Mandeb traffic to stop completely; PortWatch has had no day under 13 since Jan 2024, and today's ~20 a day (JMIC, 9-14 Nov) is a three-year low but far from zero. Two more months than the Jan 31 rung (2.5%) add a little US-Iran war risk, not 20 points."
  }
 ]
