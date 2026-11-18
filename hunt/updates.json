@@ -286,5 +286,28 @@
   "at": "2026-11-17T09:30",
   "fair": 0.96,
   "why": "Deep dive 17 Nov: fair YES ~4% vs market 24%. A zero-transit day needs Bab el-Mandeb traffic to stop completely; PortWatch has had no day under 13 since Jan 2024, and today's ~20 a day (JMIC, 9-14 Nov) is a three-year low but far from zero. Two more months than the Jan 31 rung (2.5%) add a little US-Iran war risk, not 20 points."
+ },
+ {
+  "id": "6424268",
+  "at": "2026-11-18T23:10",
+  "fair": 0.92,
+  "why": "Deep dive 18 Nov: fair YES ~8% vs a 15% screen price (book 0.04/0.29, so NO costs 0.96+). No Houthi hit on a merchant ship for 86 days (last: Amzan, 24 Aug; LLI/UKMTO 12 Nov), and nothing since 1 Oct qualifies. Houthi missiles go at Saudi land targets (Riyadh, Yanbu, the East-West pipeline, 12 and 17-18 Nov); the declared target list is still Saudi- and Israel-linked ships only. Risks: a turn back to Saudi tankers, a full US-Iran war, a strike on a tanker berthed at Yanbu."
+ },
+ {
+  "id": "5939428",
+  "at": "2026-11-18T23:10",
+  "fair": 0.98,
+  "why": "Deep dive 18 Nov: fair YES ~2%. No rating action since 2 Nov: S&P BBB- stable, Moody's Baa2 negative (two notches up). A cut by 31 Dec needs S&P to skip the outlook/CreditWatch step within ~3 weeks of Q2 results (~9-10 Dec); it just rated the 2 Nov notes BBB-, and Oracle has raised more equity than S&P assumed. CDS >300bp and ORCL $113.89 keep the June rung live, not this one."
+ },
+ {
+  "id": "5939429",
+  "at": "2026-11-18T23:10",
+  "fair": 0.85,
+  "add": {
+   "event": "1219847",
+   "side": "NO",
+   "name": "Oracle junk-rated by Jun 30"
+  },
+  "why": "Deep dive 18 Nov: fair YES ~15% vs 31% (NO ask 0.70, was 0.80-0.84 on 7 Nov). Junk needs S&P to cut BBB- (stable) or Moody's two notches. The likely path is two steps, CreditWatch or negative outlook after Q2 (Dec) or Q3 (Mar), then a cut, and S&P cut 29 days after annual results last year, so a June-results cut would land after 30 Jun. Worse since 7 Nov: CDS >300bp, ORCL below the $116 equity deal, Microsoft winding down a capacity deal, OpenAI raising half its target. Same AI-credit risk as the Oracle Dec, OpenAI and Anthropic NOs."
  }
 ]

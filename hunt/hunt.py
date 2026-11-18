@@ -50,7 +50,7 @@ BATCHES = os.path.join(WORK, 'batches')  # full review: scan writes one file per
 REVIEWS = os.path.join(WORK, 'reviews')  # ... each subagent writes its fair values here, and ingest reads them
 SEED = os.path.join(HERE, 'seed.json')
 SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
-UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull
+UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull; an entry with "add" queues a new pick
 SITE = os.path.join(ROOT, 'site', 'hunt')
 SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page ...
 NAV = os.path.join(WORK, 'nav.json')  # ... and the hunt's tabs and Refresh button in the page's top menu
@@ -292,6 +292,20 @@ def cmd_pull(a):
                 if p['id'] == u['id'] and (p.get('reviewed') or '') < u['at']:
                     p.update(fair=u['fair'], why=u['why'], reviewed=u['at'])
                     print(f"applied update from {u['at']}: {p['name']} fair {u['fair']}")
+            # An entry with "add" ({event, side, name?, tag?, end?}) puts a market that isn't a pick yet into the book,
+            # once: st['adds'] remembers it, so a pick dropped later is not added back.
+            if u.get('add') and u['id'] not in st.setdefault('adds', []) and all(p['id'] != u['id'] for p in st['picks']):
+                try:
+                    x = u['add']
+                    e = event_by_ref(str(x['event']))
+                    m = next(m for m in e.get('markets') or [] if m['id'] == u['id'] and not m.get('closed'))
+                    p = new_pick(e, m, x.get('side', 'NO'), u['fair'], u['why'], x.get('name'), x.get('tag'), x.get('end'))
+                    p['reviewed'] = u['at']
+                    st['picks'].append(p)
+                    st['adds'].append(u['id'])
+                    print(f"added from updates ({u['at']}): {p['name']} {p['side']} ask {p['ask']}, fair {u['fair']}")
+                except Exception as err:  # never let a queued add break the morning run
+                    print(f"warning: could not add {u['id']} from updates.json: {err!r}")
     if st.get('day') != str(TODAY):  # first run today: last run's prices become the "previous" column
         for p in st['picks']:
             p['prev_ask'], p['prev_bid'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('fair')
@@ -663,6 +677,19 @@ def cmd_drop(a):
     print(f"dropped {p['id']} {p['name']}")
 
 
+def new_pick(e, m, side, fair, why, name=None, tag=None, end=None):
+    """A new pick for market m of Gamma event e, priced from the book now (used by `add` and by queued adds in pull)."""
+    token = json.loads(m['clobTokenIds'])[0 if side == 'YES' else 1]
+    p = dict(id=m['id'], cid=m['conditionId'], token=token, side=side, event=e['id'], q=m['question'],
+             name=name or m['question'].rstrip('?'), url=f"https://polymarket.com/event/{e['slug']}",
+             end=end or (m.get('endDate') or '')[:10], fair=fair, why=why, tag=tag or '',
+             added=str(TODAY), reviewed=str(TODAY), prev_ask=None, prev_fair=None,
+             hold=bool(m.get('holdingRewardsEnabled')), fee=(m.get('feeSchedule') or {}).get('rate'))
+    p.update(book(token))
+    p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
+    return p
+
+
 def cmd_add(a):
     st = load()
     e = event_by_ref(a.event)
@@ -678,14 +705,7 @@ def cmd_add(a):
     m = ms[0]
     if any(p['id'] == m['id'] for p in st['picks']):
         sys.exit(f"already in the book as {m['id']}; use `set`")
-    token = json.loads(m['clobTokenIds'])[0 if a.side == 'YES' else 1]
-    p = dict(id=m['id'], cid=m['conditionId'], token=token, side=a.side, event=e['id'], q=m['question'],
-             name=a.name or m['question'].rstrip('?'), url=f"https://polymarket.com/event/{e['slug']}",
-             end=a.end or (m.get('endDate') or '')[:10], fair=a.fair, why=a.why, tag=a.tag or '',
-             added=str(TODAY), reviewed=str(TODAY), prev_ask=None, prev_fair=None,
-             hold=bool(m.get('holdingRewardsEnabled')), fee=(m.get('feeSchedule') or {}).get('rate'))
-    p.update(book(token))
-    p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
+    p = new_pick(e, m, a.side, a.fair, a.why, a.name, a.tag, a.end)
     st['picks'].append(p)
     write(STATE, st)
     x = econ(p)
