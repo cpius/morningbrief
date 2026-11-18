@@ -140,6 +140,9 @@ is missing, without a fair value (`FAIR NEEDED` lines; value them with `set`). T
 shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. what holding to resolution should earn over
 selling into the bid now, and the $ edge (shares × (fair + reward − bid)). Held positions are never auto-dropped and
 leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
+Its Rec, Shares, Hold vs sell, Per yr, $ edge, Smart $ and Ends heads sort the table (`SORT_JS`; click again to
+reverse). Rec sorts sell, reduce, keep, expand; blanks go last. It is built sorted by Per yr, lowest first, and a
+Refresh re-sorts it at the live figures (`REFRESH_JS` updates each cell's `data-v` sort value with the cell).
 
 Every row has a Rec column (`advice()`). A held market (in the positions table, or a held hunt pick) is called by where
 its bid sits against fair plus the reward (hold vs sell):
