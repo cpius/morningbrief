@@ -1094,32 +1094,52 @@ def held_row_html(i, p, h):
         hvs = per_yr = edge = '<span class="faint">–</span>'
     why = f'<p class="why">{esc(p["why"])}</p>' if p.get('why') else ''
     end = datetime.date.fromisoformat(p['end'])
-    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-avg="{d['avg']}">
+    # each sortable cell's value for SORT_JS (empty sorts last); REFRESH_JS rewrites them with the cells
+    a = advice(p)
+    sv = lambda x: '' if x is None else round(x, 6)
+    rank = REC_RANK.get(a[1]) if a else None
+    smart = (p.get('smart') or {}).get('share')
+    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-avg="{d['avg']}" data-i="{i}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
-  <td class="rec" data-k="Rec">{rec_cell(p)}</td>
-  <td class="num" data-k="Held"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
+  <td class="rec" data-k="Rec" data-v="{sv(rank)}">{rec_cell(p)}</td>
+  <td class="num" data-k="Held" data-v="{sv(d['size'])}"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
   <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{other_quote('ask', p.get('ask'))}{move}</td>
   <td class="num" data-k="Fair">{fair}</td>
-  <td class="num" data-k="Hold vs sell">{hvs}</td>
-  <td class="num" data-k="Per yr">{per_yr}</td>
-  <td class="num" data-k="$ edge">{edge}</td>
-  <td class="num" data-k="Smart $">{smart_cell(p)}</td>
-  <td class="num" data-k="Ends">{end:%-d %b %Y}</td>
+  <td class="num" data-k="Hold vs sell" data-v="{sv(h and h['tot'])}">{hvs}</td>
+  <td class="num" data-k="Per yr" data-v="{sv(h and h['ann'])}">{per_yr}</td>
+  <td class="num" data-k="$ edge" data-v="{sv(h and h['edge'])}">{edge}</td>
+  <td class="num" data-k="Smart $" data-v="{sv(smart)}">{smart_cell(p)}</td>
+  <td class="num" data-k="Ends" data-v="{end.toordinal()}">{end:%-d %b %Y}</td>
 </tr>'''
 
 
+# The positions' Rec column sorts by the call: sell, reduce, keep, expand (advice()'s tones; REFRESH_JS has the same)
+REC_RANK = {'down': 0, 'warn': 1, 'ink': 2, 'up': 3}
+
+
 def held_table_html(held):
-    head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>'
-            '<th class="rec" title="Edge reversed, sell: bid more than 3% over fair. Edge gone, reduce: bid at fair up to '
-            '3% over. Expand: below fair, and buying more at the ask would make Picks. Keep: below fair. Bigger or '
-            'smaller edge first when hold vs sell moved since the last run (after a refresh, since the build).">Rec</th>'
-            '<th>Shares</th><th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>'
-            '<th title="Fair ÷ bid − 1, plus the holding reward">Hold vs sell</th>'
-            '<th title="Hold vs sell ÷ years to resolution">Per yr</th>'
-            '<th title="Shares × (fair + reward − bid)">$ edge</th><th>Smart $</th><th>Ends</th></tr></thead>')
+    def th(label, key, first='desc', title='', cls=''):
+        """A sortable column head: SORT_JS sorts by the cells' data-v, first click `first`, the next one reversed.
+        The build's order (cmd_build) is Per yr, lowest first, so that head starts out marked."""
+        attrs = (f' class="{cls}"' if cls else '') + (f' title="{title}"' if title else '')
+        state = 'ascending' if key == 'Per yr' else 'none'
+        return (f'<th{attrs} data-sort="{key}" data-first="{first}" aria-sort="{state}">'
+                f'<button type="button" class="sort">{label}</button></th>')
+    head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>' +
+            th('Rec', 'Rec', 'asc', 'Edge reversed, sell: bid more than 3% over fair. Edge gone, reduce: bid at fair up to '
+               '3% over. Expand: below fair, and buying more at the ask would make Picks. Keep: below fair. Bigger or '
+               'smaller edge first when hold vs sell moved since the last run (after a refresh, since the build). '
+               'Sorts sell first, then reduce, keep and expand.', 'rec') +
+            th('Shares', 'Held') +
+            '<th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>' +
+            th('Hold vs sell', 'Hold vs sell', title='Fair ÷ bid − 1, plus the holding reward') +
+            th('Per yr', 'Per yr', title='Hold vs sell ÷ years to resolution') +
+            th('$ edge', '$ edge', title='Shares × (fair + reward − bid)') +
+            th('Smart $', 'Smart $', title='Share of smart-money dollars on your side') +
+            th('Ends', 'Ends', 'asc') + '</tr></thead>')
     body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
-    return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
+    return f'<div class="table-box"><table class="hunt" id="hunt-held-table">{head}<tbody>{body}</tbody></table></div>'
 
 
 def render(st, main, extra, noask, held):
@@ -1189,7 +1209,8 @@ def render(st, main, extra, noask, held):
                      f'(outside a fair value\'s own error); <b>Edge gone, reduce</b> when it is at fair up to {MIN_EDGE * 100:.0f}% over; '
                      f'<b>Expand</b> when it is below fair and buying more at the ask would make Picks ({MAIN_ANN * 100:.0f}% a year); '
                      '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
-                     'bigger or smaller since the last run. Sorted by Per yr, lowest first.'
+                     'bigger or smaller since the last run. Sorted by Per yr, lowest first; click Rec, Shares, Hold vs sell, '
+                     'Per yr, $ edge, Smart $ or Ends to sort by it, and again to reverse.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
     rest = len(main) - len(fresh)
@@ -1271,6 +1292,15 @@ def render(st, main, extra, noask, held):
   .held {{ color: var(--surface); background: var(--ink); }}
   b.flat {{ color: var(--muted); }}
   td.rec, th.rec {{ text-align: left; white-space: nowrap; }}
+  /* the positions' sortable heads (SORT_JS): the arrow shows the column and direction in use */
+  th button.sort {{ font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; background: none; border: 0;
+                    padding: 0; margin: 0; cursor: pointer; white-space: nowrap; }}
+  th button.sort:hover, th button.sort:focus-visible {{ color: var(--ink); }}
+  th button.sort::after {{ content: '▾'; display: inline-block; width: 1em; text-align: center; visibility: hidden; }}
+  th[aria-sort="none"] button.sort:hover::after {{ visibility: visible; color: var(--faint); }}
+  th[aria-sort="ascending"] button.sort, th[aria-sort="descending"] button.sort {{ color: var(--ink); }}
+  th[aria-sort="ascending"] button.sort::after {{ content: '▴'; visibility: visible; }}
+  th[aria-sort="descending"] button.sort::after {{ visibility: visible; }}
   td.rec b {{ display: inline-block; font-size: 12.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; line-height: 1.5;
               color: var(--ink); background: var(--surface-2); }}
   td.rec b.up {{ color: var(--up); background: color-mix(in srgb, var(--up) 13%, transparent); }}
@@ -1417,6 +1447,9 @@ def render(st, main, extra, noask, held):
 <script>
 {REFRESH_JS}
 </script>
+<script>
+{SORT_JS}
+</script>
 ''', nav
 
 
@@ -1503,9 +1536,15 @@ REFRESH_JS = r"""
     if (same) return ['Same edge', 'flat', ''];
     return [now > then ? 'Bigger edge' : 'Smaller edge', now > then ? 'up' : 'down', `${a} → ${b}`];
   };
-  const putRec = (tr, call) => put(cell(tr, 'Rec'), call
-    ? `<b class="${call[1]}">${call[0]}</b>` + (call[2] ? `<div class="sub">${call[2]}</div>` : '')
-    : '<span class="faint">–</span>');
+  // a position cell's sort value for SORT_JS (null sorts last); only cells built with one (the positions') get it
+  const setV = (td, v) => { if (td && 'v' in td.dataset) td.dataset.v = v == null || !isFinite(v) ? '' : v; };
+  const REC_RANK = { down: 0, warn: 1, ink: 2, up: 3 };  // REC_RANK in hunt.py: sell, reduce, keep, expand
+  const putRec = (tr, call) => {
+    put(cell(tr, 'Rec'), call
+      ? `<b class="${call[1]}">${call[0]}</b>` + (call[2] ? `<div class="sub">${call[2]}</div>` : '')
+      : '<span class="faint">–</span>');
+    setV(cell(tr, 'Rec'), call ? REC_RANK[call[1]] : null);
+  };
   const rec = (tr, b) => {
     const d = tr.dataset, fair = +d.fair, hold = d.hold === '1';
     if (d.fair === '') return putRec(tr, null);
@@ -1532,13 +1571,17 @@ REFRESH_JS = r"""
     quoteCell(tr, 'Bid', b.bid, parseFloat(tr.dataset.bid), (n, t) => n > t, 'no buyers now', b.ask, 'ask');
     rec(tr, b);
     const dash = '<span class="faint">–</span>';
-    if (tr.dataset.fair === '' || !b.bid) { ['Hold vs sell', 'Per yr', '$ edge'].forEach(k => put(cell(tr, k), dash)); return; }
+    if (tr.dataset.fair === '' || !b.bid) {
+      ['Hold vs sell', 'Per yr', '$ edge'].forEach(k => { put(cell(tr, k), dash); setV(cell(tr, k), null); });
+      return;
+    }
     const h = holdEcon(b.bid, +tr.dataset.fair, tr.dataset.end, tr.dataset.hold === '1', +tr.dataset.size);
     const tone = h.tot < 0 ? 'down' : h.tot < 0.02 ? 'flat' : 'up';
     put(cell(tr, 'Hold vs sell'), `<b class="${tone}">${h.tot < 0 ? '-' : '+'}${Math.abs(h.tot * 100).toFixed(1)}%</b>` +
       (tr.dataset.hold === '1' ? `<div class="sub gold">incl. +${(h.bonus * 100).toFixed(1)}% reward</div>` : ''));
     put(cell(tr, 'Per yr'), `<b class="${tone}">${pct(h.ann)}</b>`);
     put(cell(tr, '$ edge'), +tr.dataset.size ? `<b class="${tone}">${h.edge >= 0 ? '+' : '−'}${usd(h.edge)}</b><div class="sub">on ${usd(h.value)}</div>` : dash);
+    setV(cell(tr, 'Hold vs sell'), h.tot); setV(cell(tr, 'Per yr'), h.ann); setV(cell(tr, '$ edge'), +tr.dataset.size ? h.edge : null);
   };
   // The wallet's open positions now (token → shares and average price), or null when Polymarket doesn't answer.
   // The same filter as sync_positions() in hunt.py: not yet redeemable, priced strictly between 0 and 1.
@@ -1559,6 +1602,7 @@ REFRESH_JS = r"""
       tr.dataset.size = p ? p.size : 0;
       put(cell(tr, 'Held'), p ? `<b>${Math.round(p.size).toLocaleString('en-US')}</b><div class="sub">@ ${p.avg.toFixed(3)}</div>`
                               : '<b>0</b><div class="sub down">sold</div>');
+      setV(cell(tr, 'Held'), p ? p.size : 0);
       return;
     }
     const meta = tr.querySelector('.meta'), badge = meta && meta.querySelector('.held');
@@ -1664,6 +1708,7 @@ REFRESH_JS = r"""
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       showMoves(moves, by.size);
+      document.dispatchEvent(new CustomEvent('hunt:refreshed'));  // SORT_JS re-sorts the positions at the new figures
       sinceText = `the last refresh at ${t}`;
       when.textContent = t.slice(0, 5);
       const known = new Set(tokens), outside = pos ? [...pos.keys()].filter(k => !known.has(k)).length : 0;
@@ -1677,6 +1722,38 @@ REFRESH_JS = r"""
       btn.disabled = false; btn.classList.remove('busy');
     }
   });
+})();
+"""
+
+
+# The positions table's sortable heads: a click sorts by that column's cells' data-v (first click in the head's
+# data-first direction, the next one reversed), cells without a value last and ties in the build's order (data-i).
+# The # column counts the rows as shown. A refresh (REFRESH_JS's 'hunt:refreshed') re-sorts at the new figures.
+SORT_JS = r"""
+(() => {
+  const table = document.getElementById('hunt-held-table');
+  if (!table) return;
+  const body = table.tBodies[0], heads = [...table.querySelectorAll('th[data-sort]')];
+  const start = heads.find(th => th.getAttribute('aria-sort') !== 'none');
+  let by = start ? start.dataset.sort : null, dir = start && start.getAttribute('aria-sort') === 'descending' ? -1 : 1;
+  const val = (tr, k) => {
+    const td = tr.querySelector(`td[data-k="${k}"]`), v = td ? td.dataset.v : '';
+    return v === '' || v == null || isNaN(+v) ? null : +v;
+  };
+  const apply = () => {
+    if (!by) return;
+    const rows = [...body.rows].map(tr => [tr, val(tr, by), +tr.dataset.i]);
+    rows.sort((a, b) => (a[1] == null) - (b[1] == null) || (a[1] == null ? 0 : (a[1] - b[1]) * dir) || a[2] - b[2]);
+    rows.forEach(([tr], n) => { const c = tr.querySelector('td.n'); if (c) c.textContent = n + 1; body.append(tr); });
+    heads.forEach(th => th.setAttribute('aria-sort', th.dataset.sort !== by ? 'none' : dir > 0 ? 'ascending' : 'descending'));
+  };
+  heads.forEach(th => th.querySelector('button').addEventListener('click', () => {
+    const k = th.dataset.sort;
+    dir = k === by ? -dir : th.dataset.first === 'asc' ? 1 : -1;
+    by = k;
+    apply();
+  }));
+  document.addEventListener('hunt:refreshed', apply);
 })();
 """
 
