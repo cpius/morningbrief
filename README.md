@@ -32,13 +32,54 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   line in the output; add an entry to fix a clumsy one.
 - `research.json` holds "Why it moved" notes, keyed by asset id. The script prints `research MISSING: ...` for
   each position that moved at least 2¢ or $10 without a note for the current 24h window.
-- `python3 deploy.py` posts everything under `site/` to the Vercel API as a production deployment
+- `python3 deploy.py` first brings the live deep dives into `site/deep/` and links them from the brief (see "Deep
+  dives"), then posts everything under `site/` to the Vercel API as a production deployment
   (`--preview` for a preview). It sends no token: the cloud environment's "Vercel API Token" credential adds the
   Authorization header for api.vercel.com. To test locally, pipe `python3 deploy.py --preview --body-only` into
   `vercel api "/v13/deployments?teamId=team_45ZNkd6F5HMXNUu6jGjrKr44" -X POST --input -`.
 - A daily Claude Code cloud routine (environment `morningbrief`) runs the script, researches the missing movers,
   updates the hunt's book, reruns the script and deploys. It then runs the hunt's full review (below), which takes
   a few hours, and builds and deploys again, so a slow or failed review never holds up the brief.
+
+## Deep dives (`deep.py`, `/deep/`)
+
+An hourly cloud routine ("Hourly deep dives", Fable 5.2 at extra effort, same `morningbrief` environment) looks at the
+wallet and writes a deep dive on up to 3 events, each published as a sub-page of the brief at `/deep/<event slug>/`.
+Most hours nothing qualifies and the run ends without deploying.
+
+    python3 deep.py candidates          # rank the wallet's events; ELIGIBLE ones may get a deep dive now
+    python3 deep.py show <event slug>   # rules, books, the wallet's markets, the last deep dive
+    python3 deep.py add <event slug> --title .. --verdict .. --body <html fragment> --fair <asset>=<p> --picked ..
+    python3 deep.py publish             # the live site as it is plus this run's deep dives, deployed (--preview)
+
+An event is eligible when all three hold (the constants at the top of `deep.py`):
+
+- **The price changed significantly**: a market the wallet holds in it moved 2¢ in 24h, or 15% of its distance to the
+  nearer end (97¢ → 95.5¢ counts; a tick doesn't).
+- **It moved the 24h P/L**: the event's trade-adjusted 24h change (the brief's own sum) is at least $20 and 5% of the
+  day's gross swing, the sum of every event's |24h change|.
+- **No recent deep dive at this price**: none in the last 3 days written with every held market within that same
+  distance of where it is now. Within 6 hours of a dive only a 5¢ move since earns another.
+
+`candidates` prints the eligible events, biggest 24h effect first, with each market's book and 24h volume (a midpoint
+can move on a wide book without a trade; the routine is told to pass those over). The agent picks, researches and
+writes the body; `add` wraps it in the page (headline, verdict, the position with its prices, fair value and hold vs
+sell when the dive was written, what it replaces) and strips scripts, images and anything else that loads or runs.
+
+Like the hunt's book and the run log, the deep dives live in the deployment: `site/deep/index.json` holds the latest
+dive per event (when, the prices then, verdict, fair values) and `site/deep/<event>/index.html` the page. A new dive of
+an event replaces the old one; the others stay until they are replaced too.
+
+- `deep.sync()` brings the live dives into `site/deep/` (the newer dive of an event wins) and `link_brief()` puts a
+  "Deep dive 19 Nov 14:05 · at 32.5¢" chip on each covered position row, a "Deep dives" list above the page's footer
+  and a tab for it at the end of the top menu. It takes out what it put in before, so it can run on its own output.
+  `deploy.py` runs it before every deploy, so the morning routine's deploys keep the dives and their links without
+  refresh.py knowing about them. If the live dives can't be read and there is no local copy, the deploy stops rather
+  than wipe them (the next one, minutes later in the morning run, tries again).
+- `publish` doesn't rebuild the brief (that would drop the morning's "Why it moved" notes). It makes `site/` the
+  production deployment file for file (the Vercel file list, each file checked against its sha1), syncs and links as
+  above, checks that nobody deployed meanwhile, and deploys. `DEEP_VERCEL_CLI=1` sends the API calls through the local
+  `vercel` CLI for testing; use it with `--preview`.
 
 ## Run log (`runlog.py`, `/log/`)
 
