@@ -71,7 +71,8 @@ dive per event (when, the prices then, verdict, fair values) and `site/deep/<eve
 an event replaces the old one; the others stay until they are replaced too.
 
 - `deep.sync()` brings the live dives into `site/deep/` (the newer dive of an event wins) and `link_brief()` puts a
-  "Deep dive 19 Nov 14:05 · at 32.5¢" chip on each covered position row, a "Deep dives" list above the page's footer
+  "Deep dive 19 Nov 14:05 · at 32.5¢ · fair 30¢" chip on each covered position row (the dive's own fair value, which
+  the hunt book takes at its next `pull`), a "Deep dives" list above the page's footer
   and a tab for it at the end of the top menu. It takes out what it put in before, so it can run on its own output.
   `deploy.py` runs it before every deploy, so the morning routine's deploys keep the dives and their links without
   refresh.py knowing about them. If the live dives can't be read and there is no local copy, the deploy stops rather
@@ -175,6 +176,13 @@ book, used only when the live copy is missing. Working files go to `hunt/work/` 
 
 To change fair values outside the routine (for example after a deep dive), add entries to `hunt/updates.json`
 (`id`, `at` timestamp, `fair`, `why`). The next `pull` applies each one once, to the pick whose last review is older.
+
+The hourly deep dives (below) feed the book the same way, with nothing to commit: `pull` reads the live
+`/deep/index.json` and `apply_dives()` gives each market's fair value to its pick (a pick on the other side of the
+market gets 1 minus it) when the dive is newer than the pick's last review. The pick's reason becomes "Deep dive
+19 Nov 20:41: <the dive's verdict>". A date-only review from the same day counts as older than the dive; a `set` on a
+later day stands. So a dive's fair value reaches the book, the hold-vs-sell figures and the Rec column at the next
+morning's build, and the morning review can still revise it on newer news.
 
 The wallet's open positions are part of the book. `scan` marks picks the wallet holds and adds any held market that
 is missing, without a fair value (`FAIR NEEDED` lines; value them with `set`). The page's "Your open positions" table
