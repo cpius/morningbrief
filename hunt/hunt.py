@@ -55,6 +55,7 @@ SITE = os.path.join(ROOT, 'site', 'hunt')
 SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page ...
 NAV = os.path.join(WORK, 'nav.json')  # ... and the hunt's tabs and Refresh button in the page's top menu
 LIVE = 'https://nothing-ever-happens-book.vercel.app/hunt/'
+DEEP_LIVE = 'https://nothing-ever-happens-book.vercel.app/deep/index.json'  # the hourly deep dives (deep.py); pull takes their fair values
 GAMMA, CLOB, DATA = 'https://gamma-api.polymarket.com', 'https://clob.polymarket.com', 'https://data-api.polymarket.com'
 UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'}
 
@@ -269,6 +270,31 @@ def event_by_ref(ref):
 
 # ---------------------------------------------------------------- pull
 
+def apply_dives(st, dives):
+    """Fair values from the hourly deep dives (deep.py's index: the latest dive per event). Like an update from
+    hunt/updates.json, each applies once, to a pick whose last review is older than the dive. A dive gives the fair
+    value of the side the wallet holds; a pick on the other side of the same market gets 1 minus it."""
+    n = 0
+    for d in dives:
+        at = d['at'][:16]  # Copenhagen time, as in updates.json: 2026-11-19T20:41
+        t = datetime.datetime.fromisoformat(at)
+        for m in d.get('markets') or []:
+            if m.get('fair') is None:
+                continue
+            for p in st['picks']:
+                same = p.get('token') == m['asset']
+                if not same and not (m.get('market') and p['id'] == m['market']):
+                    continue
+                if (p.get('reviewed') or '') >= at:
+                    continue
+                fair = round(m['fair'] if same else 1 - m['fair'], 4)
+                was = p.get('fair')
+                p.update(fair=fair, why=f"Deep dive {t.day} {t:%b %H:%M}: {d.get('verdict') or d.get('title') or ''}", reviewed=at)
+                n += 1
+                print(f"applied deep dive from {at}: {p['name']} {p['side']} fair {was if was is not None else 'none'} -> {fair}")
+    return n
+
+
 def cmd_pull(a):
     if os.path.exists(STATE) and not a.fresh and read(STATE).get('day') == str(TODAY):
         print('hunt/work/state.json is already from today; keeping it (pull --fresh to refetch)')
@@ -306,6 +332,11 @@ def cmd_pull(a):
                     print(f"added from updates ({u['at']}): {p['name']} {p['side']} ask {p['ask']}, fair {u['fair']}")
                 except Exception as err:  # never let a queued add break the morning run
                     print(f"warning: could not add {u['id']} from updates.json: {err!r}")
+    try:  # the hourly deep dives' fair values, from the live site; never a reason for pull to fail
+        apply_dives(st, (get(f'{DEEP_LIVE}?t={int(time.time())}', tries=3).get('dives') or {}).values())
+    except Exception as err:
+        if getattr(err, 'code', None) != 404:  # 404: no deep dives published yet
+            print(f'warning: deep dives not applied: {err!r}')
     if st.get('day') != str(TODAY):  # first run today: last run's prices become the "previous" column
         for p in st['picks']:
             p['prev_ask'], p['prev_bid'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('fair')

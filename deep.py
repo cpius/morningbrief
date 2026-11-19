@@ -492,7 +492,8 @@ def cmd_add(a):
              at=datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec='minutes'),
              model=a.model, effort=a.effort, verdict=a.verdict, picked=a.picked,
              d24=round(e['d24'], 2), move=round(e['move'], 2), share=round(e['share'], 3),
-             markets=[dict(asset=r['asset'], title=r['title'], outcome=r['outcome'], size=r['size'], avg=r['avg'],
+             markets=[dict(asset=r['asset'], market=r.get('market'), title=r['title'], outcome=r['outcome'],
+                           size=r['size'], avg=r['avg'],
                            price=r['now'], p24=r['p24'], move=round(r['move'], 2), d24=round(r['d24'], 2),
                            bid=r.get('bid'), ask=r.get('ask'), fair=fairs.get(r['asset'])) for r in e['rows']])
     if old:
@@ -589,10 +590,15 @@ def link_brief(page, index):
         if not d:
             return m.group(0)
         title, outcome = html.unescape(m.group(3)), html.unescape(m.group(4))
-        at = next((x['price'] for x in d.get('markets', []) if x['title'] == title and x['outcome'] == outcome), None)
+        mk = next((x for x in d.get('markets', []) if x['title'] == title and x['outcome'] == outcome), {})
         hits += 1
+        text = f'Deep dive {when(d["ts"])}'
+        if mk.get('price') is not None:
+            text += f' · at {cents(mk["price"])}'
+        if mk.get('fair') is not None:  # the dive's fair value; the hunt book takes it at its next pull (hunt.py apply_dives)
+            text += f' · fair {cents(mk["fair"])}'
         return (f'{m.group(1)}<a class="deep" href="{html.escape(d["page"])}" title="{html.escape(d.get("verdict") or "")}">'
-                f'Deep dive {when(d["ts"])}{" · at " + cents(at) if at is not None else ""}</a>{m.group(5)}')
+                f'{text}</a>{m.group(5)}')
 
     page = ROW.sub(chip, page)
     items = ''.join(
