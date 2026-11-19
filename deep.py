@@ -222,8 +222,8 @@ def quotes(ev, assets):
             if tok not in assets:
                 continue
             bid, ask = m.get('bestBid'), m.get('bestAsk')  # the YES side's
-            if i == 1:  # the NO token: its bid is 1 - the YES ask
-                bid, ask = (1 - ask if ask is not None else None), (1 - bid if bid is not None else None)
+            if i == 1:  # the NO token: its bid is 1 - the YES ask (rounded: 1 - 0.7 is 0.30000000000000004)
+                bid, ask = (round(1 - ask, 4) if ask is not None else None), (round(1 - bid, 4) if bid is not None else None)
             out[tok] = dict(bid=bid, ask=ask, vol24=m.get('volume24hr') or 0, market=m.get('id'),
                             question=m.get('question'), rules=m.get('description') or '', end=(m.get('endDate') or '')[:10])
     return out
@@ -420,7 +420,7 @@ def page_html(d, body):
         if m.get('fair') is not None:
             fair = cents(m['fair'])
             if m.get('bid'):
-                h = m['fair'] / m['bid'] - 1
+                h = round(m['fair'] / m['bid'] - 1, 4) + 0.0  # + 0.0: a bid at fair reads +0.0%, not -0.0%
                 hold = f'<span class="{tone(h)}">{h * 100:+.1f}%</span>'
         rows.append(
             f'<tr><td>{esc(m["title"])}<span class="side">{esc(m["outcome"])}</span></td>'
