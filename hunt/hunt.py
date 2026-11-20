@@ -1441,7 +1441,7 @@ def render(st, main, extra, noask, held):
   :root:not([data-theme="light"]) #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 }}
 :root[data-theme="dark"] #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
-/* The biggest moves after a Refresh: a card under the Profit/Loss one. It ships in this section, hidden, and
+/* The recent moves after a Refresh: a card under the Profit/Loss one. It ships in this section, hidden, and
    REFRESH_JS moves it up there, so its rules stand outside #hunt. */
 #hunt-moves {{
   display: grid; gap: 6px; min-width: 0; padding: 18px 20px 12px; background: var(--surface); border: 1px solid var(--rule);
@@ -1528,7 +1528,7 @@ def render(st, main, extra, noask, held):
     Rebuilt every morning by the morning brief routine.</p>
   </footer>
   <section class="moves" id="hunt-moves" aria-labelledby="moves-title" aria-live="polite" hidden>
-    <div class="moves-head"><div><h2 id="moves-title">Biggest moves</h2><p id="moves-since"></p></div>
+    <div class="moves-head"><div><h2 id="moves-title">Recent moves</h2><p id="moves-since"></p></div>
       <button type="button" class="moves-close" id="moves-close" aria-label="Hide until the next refresh" title="Hide until the next refresh">×</button></div>
     <ol class="moves-list" id="moves-list"></ol>
     <p class="moves-foot" id="moves-foot"></p>
@@ -1740,7 +1740,7 @@ REFRESH_JS = r"""
   if (box && spot) spot.after(box);
   // While the card shows, the top menu has a tab for it, after the tab of the card it sits under (NAV_JS lights it)
   const after = box && spot && document.querySelector(`.topnav .tabs a[href="#${spot.id}"]`);
-  const tab = Object.assign(document.createElement('a'), { href: '#hunt-moves', textContent: 'Biggest moves' });
+  const tab = Object.assign(document.createElement('a'), { href: '#hunt-moves', textContent: 'Recent moves' });
   const showTab = on => { if (!after) return; if (!on) tab.remove(); else if (!tab.isConnected) after.after(tab); };
   let sinceText = `the page was built at ${btn.dataset.built}`;
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
