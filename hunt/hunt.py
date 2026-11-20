@@ -24,8 +24,9 @@ resolves in weeks beats a big one that takes years.
 
 The wallet's open positions are part of the book too. `scan` marks picks the wallet holds and adds any held market
 that is missing, with no fair value yet (it prints FAIR NEEDED; set one with `set`). For a held position the page
-shows "hold vs sell": fair / best bid - 1 plus the reward, i.e. what holding to resolution should earn over selling
-into the bid now. Held positions are never auto-dropped; they leave the book when sold, unless they are also hunt picks.
+shows "hold vs sell": fair / sell price - 1 plus the reward, i.e. what holding to resolution should earn over selling
+now. The sell price is the average over the bids from the best one down to SELL_DEPTH below it, for as many of the
+held shares as they take (sell_fill); shares beyond them can't be sold near the price and are left out. Held positions are never auto-dropped; they leave the book when sold, unless they are also hunt picks.
 
 Full review: every candidate market (about 2,000 in 1,000 events) is researched every day, not only new ones. `scan`
 splits them into hunt/work/batches/bNNN.json, nearest end first, with the series history of recurring events; the
@@ -66,6 +67,7 @@ HOLD_APR = 0.0325       # Polymarket holding reward, variable at their discretio
 MAIN_ANN = 0.30         # main list: at least this much a year
 MIN_ANN = 0.10          # appendix; below this a year a pick is dropped at build
 MIN_EDGE = 0.03         # also dropped below this to resolution: inside a fair value's own error
+SELL_DEPTH = 0.05       # selling a position walks the bids down to this far below the best one (refresh.py has the same)
 ANN_MIN_DAYS = 14       # annualize over at least this many days: the money doesn't go into the next bet the next day
 BATCH_EVENTS = 15       # full review: events per research subagent ...
 BATCH_MARKETS = 30      # ... and at most this many markets (a long ladder gets a batch of its own)
@@ -185,24 +187,50 @@ def weak(e):
     return None
 
 
+def sell_fill(bids, size):
+    """Selling `size` shares now: (shares sold, cash). It takes the bids from the best one down to SELL_DEPTH below
+    it; shares beyond those have no buyer near the price and stay unsold, rather than being priced at stray low bids.
+    refresh.py's sell_fill() and REFRESH_JS's fill() apply the same rule."""
+    if not bids:
+        return 0.0, 0.0
+    floor = bids[0][0] - SELL_DEPTH - 1e-9
+    left, cash = size, 0.0
+    for px, sz in bids:
+        if px < floor or left <= 1e-9:
+            break
+        take = min(left, sz)
+        cash += take * px
+        left -= take
+    return size - left, cash
+
+
 def hold_econ(p):
-    """For a held position: holding to resolution vs selling into today's best bid (per share and in $)."""
+    """For a held position: holding to resolution vs selling now (per share and in $). `sell` is the average price the
+    held shares fetch at the bids (sell_fill) and `sold` how many of them those bids take; edge and value count only
+    those. A pick priced before the bids were kept (no 'bids') sells at its best bid."""
     h = p.get('held')
     if not h or p.get('fair') is None or not p.get('bid'):
         return None
+    if p.get('bids'):
+        sold, cash = sell_fill(p['bids'], h['size'])
+        if sold < 1e-6:
+            return None
+        bid = cash / sold
+    else:
+        sold, bid = h['size'], p['bid']
     days = max((datetime.date.fromisoformat(p['end']) - TODAY).days, 1)
     yrs = days / 365
-    bid, fair = p['bid'], p['fair']
+    fair = p['fair']
     reward = HOLD_APR * yrs * (bid + fair) / 2 if p.get('hold') else 0.0  # per share, on the mid value
     tot = (fair + reward) / bid - 1
-    return dict(yrs=yrs, tot=tot, bonus=reward / bid, ann=per_year(tot, days), edge=h['size'] * (fair + reward - bid),
-                value=h['size'] * bid)
+    return dict(yrs=yrs, tot=tot, bonus=reward / bid, ann=per_year(tot, days), edge=sold * (fair + reward - bid),
+                value=sold * bid, sell=bid, sold=sold)
 
 
 def advice(p):
     """The Rec column: (label, tone, sub-line), or None.
 
-    A held position, by where the bid is against fair (plus the reward), i.e. hold vs sell:
+    A held position, by where its sell price (hold_econ) is against fair (plus the reward), i.e. hold vs sell:
       more than MIN_EDGE over fair (hold vs sell under -3%)  "Edge reversed, sell"
       at fair up to MIN_EDGE over (hold vs sell -3% to 0)    "Edge gone, reduce"
       below fair, buying more at the ask makes the main list "Expand"
@@ -223,7 +251,8 @@ def advice(p):
             label, tone, sub = 'Expand', 'up', f"{pct(e['ann'])}/yr at ask"
         else:
             label, tone, sub = 'Keep', 'ink', f"{h['tot'] * 100:+.1f}% left" if h else 'no bids'
-        then = h and p.get('prev_bid') and hold_econ(dict(p, bid=p['prev_bid'], fair=p['fair'] if p.get('prev_fair') is None else p['prev_fair']))
+        then = h and p.get('prev_bid') and hold_econ(dict(p, bid=p['prev_bid'], bids=p.get('prev_bids'),
+                                                          fair=p['fair'] if p.get('prev_fair') is None else p['prev_fair']))
         if then and abs(h['tot'] - then['tot']) >= 0.001:
             label = f"{'Bigger' if h['tot'] > then['tot'] else 'Smaller'} edge, {label.lower()}"
         return label, tone, sub
@@ -250,10 +279,12 @@ def edge_move(then, now):
 def book(token):
     k = get(f'{CLOB}/book?token_id={token}', tries=3)
     asks = sorted((float(x['price']), float(x['size'])) for x in k.get('asks') or [])
-    bids = sorted((float(x['price']) for x in k.get('bids') or []), reverse=True)
+    bids = sorted(((float(x['price']), float(x['size'])) for x in k.get('bids') or []), reverse=True)
     a = asks[0][0] if asks else None
-    return dict(ask=a, bid=bids[0] if bids else None,
-                depth=round(sum(px * sz for px, sz in asks if px <= a + 0.02)) if a else 0)
+    b = bids[0][0] if bids else None
+    # the bids a sale would take (sell_fill), kept with the pick so hold_econ() can price selling the held shares
+    near = [[px, round(sz, 2)] for px, sz in bids if px >= b - SELL_DEPTH - 1e-9] if bids else []
+    return dict(ask=a, bid=b, bids=near, depth=round(sum(px * sz for px, sz in asks if px <= a + 0.02)) if a else 0)
 
 
 def event_by_ref(ref):
@@ -339,7 +370,7 @@ def cmd_pull(a):
             print(f'warning: deep dives not applied: {err!r}')
     if st.get('day') != str(TODAY):  # first run today: last run's prices become the "previous" column
         for p in st['picks']:
-            p['prev_ask'], p['prev_bid'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('fair')
+            p['prev_ask'], p['prev_bid'], p['prev_bids'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('bids'), p.get('fair')
         st.update(prev_day=st.get('day'), day=str(TODAY), notes=[], dropped=[], resolved=[])
     write(STATE, st)
     write(WALLETS, wallets, indent=None)
@@ -363,7 +394,7 @@ def reprice(p):
     try:
         r.update(book(p['token']))
     except Exception as e:
-        r.update(ask=None, bid=None, depth=0, err=f'book: {e}')
+        r.update(ask=None, bid=None, bids=[], depth=0, err=f'book: {e}')
     return p['id'], r
 
 
@@ -1001,6 +1032,7 @@ def cmd_build(a):
         hvs = f"{h['tot'] * 100:+.1f}% ({h['ann'] * 100:+,.0f}%/yr)" if h else '–'
         rec = (advice(p) or ('–',))[0]
         print(f"  held {p['held']['size']:>8,.0f} {p.get('outcome') or p['side']:4} bid {px(p.get('bid')):>5} "
+              f"sells {px(h['sell'] if h else None):>5} "
               f"ask {px(p.get('ask')):>5} fair {fair:<5} hold vs sell {hvs:>16} {rec:<6}  {p['name']}")
     for p in st['dropped']:
         print(f"  dropped: {p['name']}: {p['reason']}")
@@ -1129,6 +1161,10 @@ def held_row_html(i, p, h):
     move = ''
     if p.get('bid') and prev is not None and abs(p['bid'] - prev) >= 0.005:  # a higher bid is good news for a holder
         move = f'<div class="sub {"up" if p["bid"] > prev else "down"}">was {px(prev)}</div>'
+    sells = ''
+    if h and (p['bid'] - h['sell'] >= 0.005 or h['sold'] < d['size'] - 0.5):  # half a cent under the bid, or shares left
+        short = d['size'] - h['sold']
+        sells = f'<div class="sub">sells at {px(h["sell"])}</div>' + (f'<div class="sub down">{short:,.0f} sh find no bid</div>' if short >= 0.5 else '')
     if p.get('fair') is None:
         fair = '<span class="faint">–</span><div class="sub">not valued yet</div>'
     else:
@@ -1150,12 +1186,12 @@ def held_row_html(i, p, h):
     sv = lambda x: '' if x is None else round(x, 6)
     rank = REC_RANK.get(a[1]) if a else None
     smart = (p.get('smart') or {}).get('share')
-    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-avg="{d['avg']}" data-i="{i}">
+    return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-avg="{d['avg']}" data-sell="{sv(h and h['sell'])}" data-i="{i}">
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
   <td class="rec" data-k="Rec" data-v="{sv(rank)}">{rec_cell(p)}</td>
   <td class="num" data-k="Held" data-v="{sv(d['size'])}"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
-  <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{other_quote('ask', p.get('ask'))}{move}</td>
+  <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{other_quote('ask', p.get('ask'))}{move}{sells}</td>
   <td class="num" data-k="Fair">{fair}</td>
   <td class="num" data-k="Hold vs sell" data-v="{sv(h and h['tot'])}">{hvs}</td>
   <td class="num" data-k="Per yr" data-v="{sv(h and h['ann'])}">{per_yr}</td>
@@ -1178,15 +1214,15 @@ def held_table_html(held):
         return (f'<th{attrs} data-sort="{key}" data-first="{first}" aria-sort="{state}">'
                 f'<button type="button" class="sort">{label}</button></th>')
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>' +
-            th('Rec', 'Rec', 'asc', 'Edge reversed, sell: bid more than 3% over fair. Edge gone, reduce: bid at fair up to '
-               '3% over. Expand: below fair, and buying more at the ask would make Picks. Keep: below fair. Bigger or '
+            th('Rec', 'Rec', 'asc', 'Edge reversed, sell: sell price more than 3% over fair. Edge gone, reduce: sell price at fair '
+               'up to 3% over. Expand: below fair, and buying more at the ask would make Picks. Keep: below fair. Bigger or '
                'smaller edge first when hold vs sell moved since the last run (after a refresh, since the build). '
                'Sorts sell first, then reduce, keep and expand.', 'rec') +
             th('Shares', 'Held') +
-            '<th title="Best bid for your side; under it the best ask">Bid</th><th>Fair</th>' +
-            th('Hold vs sell', 'Hold vs sell', title='Fair ÷ bid − 1, plus the holding reward') +
+            f'<th title="Best bid for your side; under it the best ask, and the average price your shares sell at when the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take them">Bid</th><th>Fair</th>' +
+            th('Hold vs sell', 'Hold vs sell', title='Fair ÷ sell price − 1, plus the holding reward') +
             th('Per yr', 'Per yr', title='Hold vs sell ÷ years to resolution') +
-            th('$ edge', '$ edge', title='Shares × (fair + reward − bid)') +
+            th('$ edge', '$ edge', title='Shares the bids take × (fair + reward − sell price)') +
             th('Smart $', 'Smart $', title='Share of smart-money dollars on your side') +
             th('Ends', 'Ends', 'asc') + '</tr></thead>')
     body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
@@ -1227,7 +1263,7 @@ def render(st, main, extra, noask, held):
     tabs.append(('Picks', 'hunt-main', len(main)))
     if noask:
         tabs.append(('No sellers', 'hunt-noask', len(noask)))
-    button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-min-days="{ANN_MIN_DAYS}" '
+    button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-sell-depth="{SELL_DEPTH}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
         f'data-wallet="{WALLET}" '
         f'title="Fetch the current order books, your positions and your P/L from Polymarket: redo the bids, asks, returns and '
@@ -1253,10 +1289,13 @@ def render(st, main, extra, noask, held):
     held_html = ''
     if held:
         held_html = (f'<section id="hunt-positions"><h3>Your open positions: {len(held)}</h3><p class="note">The same analysis on '
-                     'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling into the '
-                     'best bid now: fair ÷ bid − 1, plus the holding reward where the market pays it. Red means the bid is above '
-                     'my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares × (fair + reward − bid). '
-                     f'<b>Rec</b>: <b>Edge reversed, sell</b> when the bid is more than {MIN_EDGE * 100:.0f}% over fair '
+                     'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling now: '
+                     'fair ÷ sell price − 1, plus the holding reward where the market pays it. The sell price is what your shares '
+                     f'average when the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take them; it shows under '
+                     'the bid when it is lower, with any shares those bids can\'t take, which count neither way. Red means the '
+                     'sell price is above my fair value. <b>Per yr</b> is the same per year to resolution. <b>$ edge</b> = shares '
+                     'the bids take × (fair + reward − sell price). '
+                     f'<b>Rec</b>: <b>Edge reversed, sell</b> when the sell price is more than {MIN_EDGE * 100:.0f}% over fair '
                      f'(outside a fair value\'s own error); <b>Edge gone, reduce</b> when it is at fair up to {MIN_EDGE * 100:.0f}% over; '
                      f'<b>Expand</b> when it is below fair and buying more at the ask would make Picks ({MAIN_ANN * 100:.0f}% a year); '
                      '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
@@ -1526,7 +1565,7 @@ REFRESH_JS = r"""
   const btn = document.getElementById('hunt-refresh');
   if (!btn) return;
   const APR = +btn.dataset.apr, MIN_DAYS = +btn.dataset.minDays, MAIN = +btn.dataset.main;
-  const MIN_EDGE = +btn.dataset.minEdge;
+  const MIN_EDGE = +btn.dataset.minEdge, SELL_DEPTH = +btn.dataset.sellDepth;
   const px = x => x == null ? '–' : String(+x.toPrecision(3));
   const fv = x => x >= 0.95 || x <= 0.05 ? x.toFixed(3) : x.toFixed(2);
   const pct = x => (x < 0 ? '-' : '+') + Math.abs(Math.round(x * 100)).toLocaleString('en-US') + '%';
@@ -1552,10 +1591,23 @@ REFRESH_JS = r"""
   };
   const top = book => {
     const asks = (book.asks || []).map(o => [+o.price, +o.size]).sort((a, b) => a[0] - b[0]);
-    const bids = (book.bids || []).map(o => +o.price).sort((a, b) => b - a);
+    const bids = (book.bids || []).map(o => [+o.price, +o.size]).sort((a, b) => b[0] - a[0]);
     const ask = asks.length ? asks[0][0] : null;
     const depth = ask == null ? 0 : Math.round(asks.filter(([p]) => p <= ask + 0.02 + 1e-9).reduce((s, [p, z]) => s + p * z, 0));
-    return { ask, bid: bids.length ? bids[0] : null, depth };
+    return { ask, bid: bids.length ? bids[0][0] : null, bids, depth };
+  };
+  // Selling a held position, as sell_fill() and hold_econ() in hunt.py: the bids from the best one down to SELL_DEPTH
+  // below it take what they can; { price: their average, sold: shares taken }, or null when none would.
+  const sellAt = (b, size) => {
+    if (!b.bid) return null;
+    if (!(size > 0)) return { price: b.bid, sold: 0 };
+    const floor = b.bids[0][0] - SELL_DEPTH - 1e-9;
+    let left = size, cash = 0;
+    for (const [p, s] of b.bids) {
+      if (p < floor || left <= 1e-9) break;
+      const t = Math.min(left, s); cash += t * p; left -= t;
+    }
+    return size - left > 1e-6 ? { price: cash / (size - left), sold: size - left } : null;
   };
   const was = (now, then, better) => {  // better(now, then) colours the line; null leaves it grey
     if (now == null || isNaN(then)) return '';
@@ -1599,7 +1651,10 @@ REFRESH_JS = r"""
   const rec = (tr, b) => {
     const d = tr.dataset, fair = +d.fair, hold = d.hold === '1';
     if (d.fair === '') return putRec(tr, null);
-    if (d.held === '1') return putRec(tr, holdCall(b.bid, b.ask, fair, d.end, hold, parseFloat(d.bid)));
+    if (d.held === '1') {
+      const s = sellAt(b, +d.size);  // a pick row has no data-size: it sells at its best bid
+      return putRec(tr, holdCall(s && s.price, b.ask, fair, d.end, hold, parseFloat(d.sell || d.bid)));
+    }
     const built = parseFloat(d.ask);
     if (isNaN(built)) return putRec(tr, null);
     putRec(tr, edgeCall(econ(built, fair, d.end, hold).tot, b.ask == null ? null : econ(b.ask, fair, d.end, hold).tot));
@@ -1618,15 +1673,21 @@ REFRESH_JS = r"""
     put(ret, `<b>${pct(e.ann)}</b>`);
     ret.className = 'num ret ' + (e.ann >= 1 ? 'r3' : e.ann >= 0.5 ? 'r2' : e.ann >= MAIN ? 'r1' : 'r0');
   };
-  const held = (tr, b) => {  // an open position: what selling into the bid gives up
+  const held = (tr, b) => {  // an open position: what selling into the bids gives up
+    const size = +tr.dataset.size, s = sellAt(b, size);
     quoteCell(tr, 'Bid', b.bid, parseFloat(tr.dataset.bid), (n, t) => n > t, 'no buyers now', b.ask, 'ask');
+    if (s && size > 0 && (b.bid - s.price >= 0.005 || s.sold < size - 0.5)) {  // as held_row_html(): half a cent under the bid, or shares left
+      const short = size - s.sold;
+      cell(tr, 'Bid').insertAdjacentHTML('beforeend', `<div class="sub">sells at ${px(s.price)}</div>` +
+        (short >= 0.5 ? `<div class="sub down">${Math.round(short).toLocaleString('en-US')} sh find no bid</div>` : ''));
+    }
     rec(tr, b);
     const dash = '<span class="faint">–</span>';
-    if (tr.dataset.fair === '' || !b.bid) {
+    if (tr.dataset.fair === '' || !s) {
       ['Hold vs sell', 'Per yr', '$ edge'].forEach(k => { put(cell(tr, k), dash); setV(cell(tr, k), null); });
       return;
     }
-    const h = holdEcon(b.bid, +tr.dataset.fair, tr.dataset.end, tr.dataset.hold === '1', +tr.dataset.size);
+    const h = holdEcon(s.price, +tr.dataset.fair, tr.dataset.end, tr.dataset.hold === '1', s.sold);
     const tone = h.tot < 0 ? 'down' : h.tot < 0.02 ? 'flat' : 'up';
     put(cell(tr, 'Hold vs sell'), `<b class="${tone}">${h.tot < 0 ? '-' : '+'}${Math.abs(h.tot * 100).toFixed(1)}%</b>` +
       (tr.dataset.hold === '1' ? `<div class="sub gold">incl. +${(h.bonus * 100).toFixed(1)}% reward</div>` : ''));

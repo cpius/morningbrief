@@ -13,6 +13,12 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
   Weather and Closed have no tab. It sticks to the top of the window, and `NAV_JS` lights the tab of the section being
   read: in a part without one, the tab of the part around it (Hunt), or none. Every part of the page shares one column, up to 1304px wide.
   Trades and the biggest movers are printed (`trade:` and `mover:` lines) for the routine's summary, not shown.
+- Sell value (2026-11-20): Value and the P/L follow Polymarket and price positions at the mid, which on a thin book
+  can sit far above any buyer. So the summary's **Sell now** and the positions table's Sell now column show what
+  selling each whole position now would bring: `sell_fill()` takes the bids from the best one down to `SELL_DEPTH`
+  (5¢) below it, best first. Under the cash: the average price and what it gives up against the mid, then the shares
+  no bid that close takes (with their value at the mid). Those shares count as unsold, not as worth the stray low bids
+  further down. The order books are fetched once per build (`book_bids()`); the brief's Refresh doesn't redo this column.
 - `pnl.py` builds the Profit/Loss card under the summary: the line polymarket.com plots (`trade_pnl` from
   `/v2/user-pnl`) for 1D, 1W, 1M, 1Y, YTD and ALL, with each period's largest swings numbered on the chart and
   listed below with the positions that drove them. A swing ends where the line reverses (`SWING`) or holds flat for a
@@ -186,15 +192,19 @@ morning's build, and the morning review can still revise it on newer news.
 
 The wallet's open positions are part of the book. `scan` marks picks the wallet holds and adds any held market that
 is missing, without a fair value (`FAIR NEEDED` lines; value them with `set`). The page's "Your open positions" table
-shows each one's "hold vs sell": fair ÷ best bid − 1 plus the reward, i.e. what holding to resolution should earn over
-selling into the bid now, and the $ edge (shares × (fair + reward − bid)). Held positions are never auto-dropped and
+shows each one's "hold vs sell": fair ÷ sell price − 1 plus the reward, i.e. what holding to resolution should earn over
+selling now, and the $ edge (shares the bids take × (fair + reward − sell price)). The sell price is the same rule as
+the brief's Sell now column (`sell_fill()`, `SELL_DEPTH`): the average over the bids from the best one down to 5¢ below
+it, for as many held shares as they take. `book()` keeps those bids with each pick (`bids`, and `prev_bids` for the
+last run's call); a pick from before them sells at its best bid. The Bid cell shows "sells at" when that is half a
+cent or more under the bid, or when some shares find no bid. Held positions are never auto-dropped and
 leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
 Its Rec, Shares, Hold vs sell, Per yr, $ edge, Smart $ and Ends heads sort the table (`SORT_JS`; click again to
 reverse). Rec sorts sell, reduce, keep, expand; blanks go last. It is built sorted by Per yr, lowest first, and a
 Refresh re-sorts it at the live figures (`REFRESH_JS` updates each cell's `data-v` sort value with the cell).
 
 Every row has a Rec column (`advice()`). A held market (in the positions table, or a held hunt pick) is called by where
-its bid sits against fair plus the reward (hold vs sell):
+its sell price sits against fair plus the reward (hold vs sell):
 
 | Bid against fair | Bid fell since last run | No change | Bid rose since last run |
 |---|---|---|---|

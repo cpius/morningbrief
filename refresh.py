@@ -6,6 +6,7 @@ trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 """
 import datetime, html, json, os, time, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 import pnl
 from favicon import FAVICON
@@ -20,6 +21,7 @@ RESEARCH = os.path.join(HERE, 'research.json')  # "why it moved" notes, keyed by
 MAX_MOVE = 3.0  # cents; full width of the 24h bar
 SIG_MOVE = 2.0  # cents; a position needs research when its price moves this much ...
 SIG_USD = 10.0  # ... or its 24h $ change is at least this
+SELL_DEPTH = 0.05  # sell value walks the bids from the best one down to this far below it (hunt/hunt.py has the same)
 TRADE_DAYS = 7  # `trade:` lines in the output (for the routine's summary) cover fills from this many days
 UA = {'User-Agent': 'Mozilla/5.0'}
 
@@ -58,6 +60,33 @@ def price_24h_ago(asset):
     start = before[-1] if before else h[0]
     series = [(T0, start['p'])] + [(x['t'], x['p']) for x in h if x['t'] > T0]
     return start['p'], h[-1]['p'], series
+
+
+def book_bids(asset):
+    """A token's bids, best first, as (price, shares); None when the CLOB doesn't answer."""
+    try:
+        k = pnl.retrying(get, f'https://clob.polymarket.com/book?token_id={asset}')
+    except Exception as e:
+        print(f'  sell: no order book for {asset} ({e})')
+        return None
+    return sorted(((float(o['price']), float(o['size'])) for o in k.get('bids') or []), reverse=True)
+
+
+def sell_fill(bids, size):
+    """Selling `size` shares now: (shares sold, cash). It takes the bids from the best one down to SELL_DEPTH below
+    it; shares beyond those have no buyer near the price and stay unsold, rather than being priced at stray low bids.
+    hunt/hunt.py's sell_fill() and its REFRESH_JS apply the same rule."""
+    if not bids:
+        return 0.0, 0.0
+    floor = bids[0][0] - SELL_DEPTH - 1e-9
+    left, cash = size, 0.0
+    for px, sz in bids:
+        if px < floor or left <= 1e-9:
+            break
+        take = min(left, sz)
+        cash += take * px
+        left -= take
+    return size - left, cash
 
 
 # ---- fetch ---------------------------------------------------------------
@@ -117,6 +146,17 @@ rows.sort(key=lambda r: -r['value'])
 open_rows = [r for r in rows if not r['redeemable'] and not r['closed']]
 closed = [r for r in rows if r['closed']]
 resolved = [r for r in rows if r['redeemable']]
+
+# Sell value: what each open position would bring if sold now (sell_fill); None when its order book didn't load.
+with ThreadPoolExecutor(8) as ex:
+    for r, bids in zip(open_rows, ex.map(book_bids, [r['asset'] for r in open_rows])):
+        if bids is None:
+            r['sell'] = None
+            continue
+        sold, cash = sell_fill(bids, r['size'])
+        # gap: the price given up on the shares the bids take, against the mid; rest: the mid value of the shares they don't
+        r['sell'] = dict(sold=sold, cash=cash, unsold=r['size'] - sold,
+                         gap=cash - sold * r['now'], rest=(r['size'] - sold) * r['now'])
 
 try:
     with open(RESEARCH) as fh:
@@ -196,8 +236,23 @@ def why(r):
     if not n or n.get('as_of', '') < f"{WIN:%Y-%m-%d}":
         return ''
     src = ' · '.join(f'<a href="{html.escape(s["url"])}">{html.escape(s["label"])}</a>' for s in n.get('sources', []))
-    return (f'<tr class="why"><td colspan="4"><div class="why-box"><span class="why-k">Why it moved</span>'
+    return (f'<tr class="why"><td colspan="5"><div class="why-box"><span class="why-k">Why it moved</span>'
             f'<p>{html.escape(n["summary"])}</p>{f"<div class=why-src>{src}</div>" if src else ""}</div></td></tr>')
+
+
+def sell_cell(r):
+    """The Sell now column: cash for the whole position at the bids (sell_fill), its average price and what that
+    gives up against the mid, and the shares no bid near the price would take (with their value at the mid)."""
+    s = r['sell']
+    if s is None:
+        return '<td class="num"><span class="faint">–</span><div class="sub">no order book</div></td>'
+    if s['sold'] < 0.005:
+        return (f'<td class="num"><b>$0.00</b><div class="sub down">no bids for {usd(s["rest"])}</div></td>')
+    out = (f'<td class="num"><b>{usd(s["cash"])}</b><div class="sub">at {cents(s["cash"] / s["sold"])} · '
+           f'<span class="{tone(s["gap"])}">{usd(s["gap"], True)}</span></div>')
+    if s['unsold'] >= 0.5:
+        out += f'<div class="sub down">{s["unsold"]:,.0f} sh no bid</div><div class="sub">{usd(s["rest"])} at mid</div>'
+    return out + '</td>'
 
 
 def side(outcome):
@@ -217,6 +272,12 @@ tot_d24 = sum(r['d24'] for r in open_rows)
 closed_d24 = sum(r['d24'] for r in closed) + sum(r['d24'] for r in resolved)
 d24_all = tot_d24 + closed_d24
 redeem_value = sum(r['value'] for r in resolved)
+priced = [r for r in open_rows if r['sell']]
+tot_sell = sum(r['sell']['cash'] for r in priced)
+sell_gap = sum(r['sell']['gap'] for r in priced)  # below the mid, on the shares the bids take
+short_rows = [r for r in priced if r['sell']['unsold'] >= 0.5]
+unsold_value = sum(r['sell']['rest'] for r in short_rows)  # at the mid, the shares no bid near the price takes
+no_book = len(open_rows) - len(priced)
 
 HUNT = os.path.join(HERE, 'site', 'hunt', 'summary.json')  # written by hunt/hunt.py build ...
 HUNT_SECTION = os.path.join(HERE, 'hunt', 'work', 'section.html')  # ... with the page's Mispricing hunt section ...
@@ -266,6 +327,7 @@ for r in open_rows:
   <td class="mkt"><a href="{link}">{html.escape(r['title'])}</a>
     <div class="meta">{side(r['outcome'])}<span>{usd(r['traded'])} traded</span>{end_chip(r['end'])}{fair_chip(r)}</div></td>
   <td class="num">{cents(r['avg'])}<span class="arrow">→</span><b>{cents(r['now'])}</b><div class="sub {tone(r['pnl'])}">{usd(r['pnl'], True)} ({r['pct']:+.1f}%)</div></td>
+  {sell_cell(r)}
   <td class="chart">{spark(r['series'], r['now'], r['p24'])}</td>
   <td class="d24">
     <div class="d24-top"><b class="{tone(r['d24'])}">{usd(r['d24'], True)}</b>{bar(dc)}</div>
@@ -557,6 +619,11 @@ if closed:
     lower.append(f'<section id="closed"><h2>Closed in the last 24h</h2><ul>{"".join(closed_item(r) for r in closed)}</ul></section>')
 
 value_sub = f"{len(open_rows)} open positions"
+sell_sub = f'<span class="s"><span class="{tone(sell_gap)}">{usd(sell_gap, True)}</span> below the mid</span>'
+if short_rows:
+    sell_sub += f'<span class="s"><span class="down">{usd(unsold_value)}</span> finds no bid</span>'
+if no_book:
+    sell_sub += f'<span class="s">{no_book} without an order book</span>'
 if redeem_value > 0.005:
     value_sub += f" · +{usd(redeem_value)} to redeem"
 
@@ -724,7 +791,7 @@ h1 {{ font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw,
 #hunt-refresh.err {{ color: var(--down); border-color: color-mix(in srgb, var(--down) 50%, transparent); }}
 @media (prefers-reduced-motion: reduce) {{ #hunt-refresh.busy span[aria-hidden] {{ animation: none; }} }}
 
-.summary {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
+.summary {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule); }}
 .stat {{ padding: 16px 20px 18px 0; display: grid; gap: 4px; align-content: start; }}
 .stat + .stat {{ padding-left: 20px; border-left: 1px solid var(--rule); }}
 .stat .k {{ font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
@@ -804,6 +871,12 @@ li {{ display: grid; gap: 3px; padding-top: 12px; border-top: 1px solid var(--ru
 .li-body b {{ font-family: var(--mono); font-weight: 600; }}
 code {{ font-family: var(--mono); font-size: 12.5px; }}
 
+@media (min-width: 821px) and (max-width: 1180px) {{  /* six stats don't fit one row here: two rows of three */
+  #summary {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+  #summary .stat:nth-child(4) {{ padding-left: 0; border-left: 0; }}
+  #summary .stat:nth-child(n+4) {{ border-top: 1px solid var(--rule); }}
+  #summary .stat.hot:nth-child(4) {{ padding-left: 20px; }}
+}}
 @media (max-width: 820px) {{
   .summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
   .stat, .stat + .stat {{ padding: 14px 14px 14px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
@@ -833,6 +906,7 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
 
   <section class="summary" id="summary" aria-label="Portfolio summary">
     <div class="stat"><span class="k">Value</span><span class="v">{usd(tot_value)}</span><span class="s">{value_sub}</span></div>
+    <div class="stat" title="What selling every open position now would bring: each sells into the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it, and that gives up the amount under it against the mid. Shares beyond those bids find no buyer near the price; the red line is their value at the mid, which a sale now would not get."><span class="k">Sell now</span><span class="v">{usd(tot_sell)}</span>{sell_sub}</div>
     <div class="stat"><span class="k">Traded</span><span class="v">{usd(tot_cost)}</span><span class="s">cost basis</span></div>
     <div class="stat"><span class="k">Unrealized P&amp;L</span><span class="v {tone(tot_pnl)}">{usd(tot_pnl, True)}</span><span class="s">{tot_pnl/tot_cost*100:+.2f}% on cost</span></div>
     <div class="stat"><span class="k">To win</span><span class="v">{usd(tot_win)}</span><span class="s">if every position pays $1</span></div>
@@ -843,11 +917,12 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
 
   <div class="table-box" id="positions">
     <table>
-      <thead><tr><th>Market</th><th>Avg → Now</th><th style="text-align:left">24h chart</th><th class="d24h">Last 24h</th></tr></thead>
+      <thead><tr><th>Market</th><th>Avg → Now</th><th title="Selling the whole position now: the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take what they can, at the average price shown, which gives up the amount beside it against the mid. Shares beyond those bids find no buyer near the price; their value at the mid is under them.">Sell now</th><th style="text-align:left">24h chart</th><th class="d24h">Last 24h</th></tr></thead>
       <tbody>{''.join(trs)}</tbody>
       <tfoot><tr>
         <td class="mkt">Total, {len(open_rows)} open positions</td>
-        <td class="num">{usd(tot_value)}<div class="sub {tone(tot_pnl)}">{usd(tot_pnl, True)}</div></td><td></td>
+        <td class="num">{usd(tot_value)}<div class="sub {tone(tot_pnl)}">{usd(tot_pnl, True)}</div></td>
+        <td class="num">{usd(tot_sell)}<div class="sub {tone(sell_gap)}">{usd(sell_gap, True)} below the mid</div>{f'<div class="sub down">{usd(unsold_value)} finds no bid</div>' if short_rows else ''}</td><td></td>
         <td class="d24"><div class="d24-top"><b class="{tone(tot_d24)}">{usd(tot_d24, True)}</b></div><div class="sub">open positions only</div></td>
       </tr></tfoot>
     </table>
@@ -910,6 +985,9 @@ with open(os.path.join(HERE, 'site', 'index.html'), 'w') as fh:
 print(f"wrote {OUT}")
 print(f"snapshot {SNAP:%Y-%m-%d %H:%M}  value {usd(tot_value)}  pnl {usd(tot_pnl, True)}  24h {usd(d24_all, True)} "
       f"(open {usd(tot_d24, True)}, closed {usd(closed_d24, True)})")
+print(f"sell now {usd(tot_sell)} ({usd(sell_gap, True)} against the mid on the shares the bids take); {len(short_rows)} positions "
+      f"have shares no bid within {SELL_DEPTH * 100:.0f}¢ of the best takes, {usd(unsold_value)} at the mid"
+      + (f"; {no_book} without an order book" if no_book else ''))
 for r in resolved:
     verdict = f"won, redeem for {usd(r['value'])}" if r['now'] >= 0.5 else f"lost, cost {usd(r['traded'])}"
     print(f"  resolved: {r['title']} {r['outcome']} ({verdict}, 24h {usd(r['d24'], True)})")
