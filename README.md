@@ -220,9 +220,9 @@ return to resolution against the last run, or **Edge gone** once its ask is at o
 The top menu's **Refresh** button (the hunt's) refetches every order book, updates both the best bid and the best ask on each
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
 edge then measured against the build. It also redraws the Profit/Loss card. The prices that moved most
-(since the build, then since the last refresh) show in a "Biggest moves" card under the Profit/Loss card: it ships
+(since the build, then since the last refresh) show in a "Recent moves" card under the Profit/Loss card: it ships
 hidden in the hunt section (`#hunt-moves`, with its own rules outside `#hunt`), and `REFRESH_JS` moves it up there and
-shows it after the first refresh, with a "Biggest moves" tab after Profit/Loss in the top menu (`NAV_JS` rescans its
+shows it after the first refresh, with a "Recent moves" tab after Profit/Loss in the top menu (`NAV_JS` rescans its
 tabs when one is added); × hides the card and its tab until the next one. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
 `advice()`, so a rule change needs the same change there.
 

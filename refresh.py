@@ -696,7 +696,7 @@ NAV_JS = r"""<script>
   nav.addEventListener('click', e => { const a = e.target.closest('a'); if (a) { pinned = a; light(links.indexOf(a)); } });
   ['wheel', 'touchstart', 'keydown'].forEach(ev => addEventListener(ev, () => { pinned = null; }, { passive: true }));
   addEventListener('scroll', () => { if (!queued) { queued = true; requestAnimationFrame(update); } }, { passive: true });
-  // the hunt's Refresh adds a Biggest moves tab while its card shows, and the card's × takes it away
+  // the hunt's Refresh adds a Recent moves tab while its card shows, and the card's × takes it away
   new MutationObserver(() => { scan(); update(); }).observe(nav, { childList: true });
   pinned = links.find(a => a.hash === location.hash) || null;
   update();
