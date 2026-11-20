@@ -34,6 +34,10 @@ routine gives each batch to a research subagent, which writes its probability of
 is decided well before its end date, the expected day) to hunt/work/reviews/bNNN.json; `ingest` reads those into the
 book's `reviews` (kept for the next day, so the next review can look only at news since) and lists the markets where
 either side clears the main list's bars at today's prices. The routine verifies those itself before it `add`s them.
+
+Each pick keeps its history (p['hist'], see log_fair): when it entered the book, at what ask and fair value, and every
+change of fair value since. When a pick resolves, `build` fetches its trail (the wallet's trades and redemptions, and
+the price of our side) and the Resolved section tells the bet's story from entry to payout, one card per bet.
 Only the standard library is used.
 """
 import argparse, datetime, glob, gzip, html, json, os, re, shutil, sys, threading, time, urllib.error, urllib.parse, urllib.request
@@ -60,7 +64,8 @@ DEEP_LIVE = 'https://nothing-ever-happens-book.vercel.app/deep/index.json'  # th
 GAMMA, CLOB, DATA = 'https://gamma-api.polymarket.com', 'https://clob.polymarket.com', 'https://data-api.polymarket.com'
 UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'}
 
-NOW = datetime.datetime.now(ZoneInfo('Europe/Copenhagen'))
+TZ = ZoneInfo('Europe/Copenhagen')
+NOW = datetime.datetime.now(TZ)
 TODAY = NOW.date()
 WALLET = '0x9d4a9ff98bdce01ff8081362f676749db0c85887'  # mdorup
 HOLD_APR = 0.0325       # Polymarket holding reward, variable at their discretion
@@ -164,6 +169,44 @@ def find(st, pid):
 def per_year(tot, days):
     """A return to resolution as a simple yearly rate, as if bets like it kept paying the same for 12 months."""
     return tot * 365 / max(days, ANN_MIN_DAYS)
+
+
+def at_now():
+    return NOW.strftime('%Y-%m-%dT%H:%M')
+
+
+def ts(at):
+    """A Copenhagen time from the book ('2026-11-19' or '2026-11-19T20:43') as a Unix timestamp."""
+    return int(datetime.datetime.fromisoformat(str(at)[:16]).replace(tzinfo=TZ).timestamp())
+
+
+def cph(s):
+    """A Gamma UTC time ('2026-11-20 00:14:56.84+00', or ISO with T and Z) as Copenhagen time, YYYY-MM-DDTHH:MM."""
+    try:
+        t = datetime.datetime.strptime(str(s)[:19].replace('T', ' '), '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return None
+    return t.replace(tzinfo=datetime.timezone.utc).astimezone(TZ).strftime('%Y-%m-%dT%H:%M')
+
+
+def add_event(p, how):
+    """The first entry of a pick's history (p['hist']): it entered the book, as a hunt pick or from the wallet."""
+    return dict(at=at_now(), ev='add', ask=p.get('ask'), bid=p.get('bid'), fair=p.get('fair'), why=p.get('why') or '', how=how)
+
+
+def log_fair(p, src, at=None):
+    """Note a pick's fair value and reason in its history when either changed since the last entry, so the Resolved
+    cards can tell the bet's story from entry to resolution. Entries, oldest first, `at` in Copenhagen time:
+      {at, ev: 'add', ask, bid, fair, why, how: 'hunt' | 'position'}   entered the book (new_pick, sync_positions)
+      {at, ev: 'fair', fair, why, src: 'set' | 'update' | 'deep dive'}  revised
+      {at, ev: 'drop', why}   left the book for a while; only in the history rebuilt from the books before 21 Nov 2026"""
+    if p.get('fair') is None:
+        return
+    h = p.setdefault('hist', [])
+    last = next((x for x in reversed(h) if x.get('fair') is not None), None)
+    if last and last['fair'] == p['fair'] and last.get('why') == (p.get('why') or ''):
+        return
+    h.append(dict(at=at or at_now(), ev='fair', fair=p['fair'], why=p.get('why') or '', src=src))
 
 
 def econ(p):
@@ -321,6 +364,7 @@ def apply_dives(st, dives):
                 fair = round(m['fair'] if same else 1 - m['fair'], 4)
                 was = p.get('fair')
                 p.update(fair=fair, why=f"Deep dive {t.day} {t:%b %H:%M}: {d.get('verdict') or d.get('title') or ''}", reviewed=at)
+                log_fair(p, 'deep dive', at)
                 n += 1
                 print(f"applied deep dive from {at}: {p['name']} {p['side']} fair {was if was is not None else 'none'} -> {fair}")
     return n
@@ -348,6 +392,7 @@ def cmd_pull(a):
             for p in st['picks']:
                 if p['id'] == u['id'] and (p.get('reviewed') or '') < u['at']:
                     p.update(fair=u['fair'], why=u['why'], reviewed=u['at'])
+                    log_fair(p, 'update', u['at'])
                     print(f"applied update from {u['at']}: {p['name']} fair {u['fair']}")
             # An entry with "add" ({event, side, name?, tag?, end?}) puts a market that isn't a pick yet into the book,
             # once: st['adds'] remembers it, so a pick dropped later is not added back.
@@ -389,7 +434,7 @@ def reprice(p):
     if m.get('closed'):
         prices = json.loads(m.get('outcomePrices') or '[]')
         i = 0 if p['side'] == 'YES' else 1
-        r.update(closed=True, won=bool(prices) and float(prices[i]) > 0.5)
+        r.update(closed=True, won=bool(prices) and float(prices[i]) > 0.5, resolved_at=cph(m.get('closedTime')))
         return p['id'], r
     try:
         r.update(book(p['token']))
@@ -516,6 +561,7 @@ def sync_positions(st):
             p.update({k: seeded[x['token_id']][k] for k in ('fair', 'why', 'name', 'tag', 'reviewed')})
         p.update(reprice(p)[1])
         p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
+        p['hist'] = [add_event(p, 'position')]
         st['picks'].append(p)
         print(f"HELD NEW {p['id']} {p['name']}: {p['outcome']} {held['size']:,.0f} sh @ {held['avg']:.3f}, added to the book"
               f"{' with the seed fair value ' + str(p['fair']) if p['fair'] is not None else ''}")
@@ -722,6 +768,7 @@ def cmd_set(a):
         if getattr(a, k) is not None:
             p[k] = getattr(a, k)
     p['reviewed'] = str(TODAY)
+    log_fair(p, 'set')
     write(STATE, st)
     e = econ(p)
     print(f"set {p['id']} {p['name']}: fair {p['fair']:.3f}, return {e['tot'] * 100:+.0f}% ({e['ann'] * 100:+,.0f}% a year)"
@@ -749,6 +796,7 @@ def new_pick(e, m, side, fair, why, name=None, tag=None, end=None):
              hold=bool(m.get('holdingRewardsEnabled')), fee=(m.get('feeSchedule') or {}).get('rate'))
     p.update(book(token))
     p['priced'] = NOW.strftime('%Y-%m-%d %H:%M')
+    p['hist'] = [add_event(p, 'hunt')]
     return p
 
 
@@ -968,6 +1016,68 @@ def cmd_smart(a):
 
 # ---------------------------------------------------------------- build
 
+# ---------------------------------------------------------------- resolved: the trail of a bet
+
+def life(p):
+    """Fetch a resolved pick's trail into p['life']: the wallet's trades and redemptions of our side (Data API activity)
+    and our side's price from its first day in the book to resolution (CLOB prices-history). A failed fetch keeps the last
+    one; the card then shows what the book itself knows."""
+    try:
+        if not p.get('resolved_at'):  # picks resolved before reprice() kept the time
+            p['resolved_at'] = cph(get(f"{GAMMA}/markets/{p['id']}").get('closedTime'))
+        acts = pages(f"{DATA}/v2/activity?user={WALLET}&condition={p['cid']}&limit=500")
+        trades = sorted((dict(t=a['timestamp'], kind=a['type'], side=a.get('side') or '', size=round(a['size'], 4),
+                              usdc=round(a['usdc_size'], 4), px=round(float(a.get('price') or 0), 4))
+                         for a in acts if a.get('token_id') == p['token'] and a['type'] in ('TRADE', 'REDEEM')),
+                        key=lambda x: x['t'])
+        t0 = min([ts(x['at']) for x in p.get('hist') or []] + [ts(p['added'])] + [x['t'] for x in trades]) - 86400
+        t1 = ts(p['resolved_at']) + 3600 if p.get('resolved_at') else int(NOW.timestamp())
+        fid, h = max(10, (t1 - t0) // 60 // 150), {}  # about 150 points; the CLOB serves at most ~15 days per call
+        for a in range(t0, t1, 14 * 86400):
+            for x in get(f"{CLOB}/prices-history?market={p['token']}&startTs={a}&endTs={min(a + 14 * 86400, t1)}"
+                         f"&fidelity={fid}").get('history') or []:
+                h[x['t']] = round(x['p'], 4)
+        p['life'] = dict(trades=trades, series=sorted([t, v] for t, v in h.items()), at=at_now())
+    except Exception as e:
+        print(f"warning: no trail for the resolved {p['name']}: {e!r}")
+
+
+def money(p):
+    """What a resolved pick did for the wallet, from its trail: dollars in (buys, fees included), back (sales, plus $1 a
+    share still held at resolution if our side won, redeemed or not), P/L, and days from the first buy to resolution.
+    None if the wallet never bought it. Polymarket's holding rewards aren't per market, so they aren't in it."""
+    tr = (p.get('life') or {}).get('trades') or []
+    buys = [x for x in tr if x['kind'] == 'TRADE' and x['side'] == 'BUY']
+    if not buys:
+        return None
+    sells = [x for x in tr if x['kind'] == 'TRADE' and x['side'] == 'SELL']
+    cost = sum(x['usdc'] for x in buys)
+    left = max(sum(x['size'] for x in buys) - sum(x['size'] for x in sells), 0.0)
+    pay = left if p['won'] else 0.0
+    back = sum(x['usdc'] for x in sells) + pay
+    days = max(((ts(p['resolved_at']) if p.get('resolved_at') else tr[-1]['t']) - buys[0]['t']) / 86400, 0)
+    ret = (back - cost) / cost if cost else 0.0
+    return dict(cost=cost, back=back, pnl=back - cost, ret=ret, days=days, ann=per_year(ret, days), left=left, pay=pay,
+                redeemed=any(x['kind'] == 'REDEEM' for x in tr))
+
+
+def first_add(p):
+    """The history's last entry into the book (a pick can leave and come back), or None."""
+    return next((x for x in reversed(p.get('hist') or []) if x.get('ev') == 'add'), None)
+
+
+def resolved_summary(p):
+    m = money(p)
+    return dict(name=p['name'], side=p['side'], won=p['won'], held=bool(p.get('held')), at=p.get('resolved_at'),
+                **(dict(cost=round(m['cost'], 2), pnl=round(m['pnl'], 2)) if m else {}))
+
+
+def resolved_line(p):
+    m = money(p)
+    cash = f", {usd(m['pnl'])} on {usd(m['cost'], False)}" if m else ''
+    return f"{p['name']}: our {p['side']} {'won' if p['won'] else 'lost'}{cash}"
+
+
 def cmd_build(a):
     st = load()
     keep = []
@@ -982,6 +1092,8 @@ def cmd_build(a):
             continue
         keep.append(p)
     st['picks'] = keep
+    for p in st['resolved']:
+        life(p)
     rows = [(p, econ(p)) for p in keep if econ(p) and not weak(econ(p))]
     rows.sort(key=lambda r: -r[1]['ann'])
     main = [r for r in rows if r[1]['ann'] >= MAIN_ANN]
@@ -1009,7 +1121,7 @@ def cmd_build(a):
                    hold=sum(1 for p, _ in rows if p.get('hold')), dropped=len(st['dropped']),
                    new=sum(1 for p, _ in rows if p.get('added') == str(TODAY)),
                    top=[short(p, e) for p, e in main[:5]],
-                   resolved=[dict(name=p['name'], side=p['side'], won=p['won'], held=bool(p.get('held'))) for p in st['resolved']],
+                   resolved=[resolved_summary(p) for p in st['resolved']],
                    notes=st['notes'],
                    positions={p['token']: dict(fair=p['fair'], bid=p.get('bid'), tot=round(h['tot'], 4) if h else None,
                                                edge=round(h['edge'], 2) if h else None, hold=bool(p.get('hold')))
@@ -1037,7 +1149,7 @@ def cmd_build(a):
     for p in st['dropped']:
         print(f"  dropped: {p['name']}: {p['reason']}")
     for p in st['resolved']:
-        print(f"  resolved: {p['name']}: our {p['side']} {'won' if p['won'] else 'lost'}")
+        print(f"  resolved: {resolved_line(p)}")
 
 
 # ---------------------------------------------------------------- page
@@ -1057,6 +1169,177 @@ def px(x):
 def fv(x):
     """A fair value: two decimals, three near the ends where the third one matters."""
     return f'{x:.3f}' if x >= 0.95 or x <= 0.05 else f'{x:.2f}'
+
+
+def usd(x, sign=True):
+    s = f'${abs(x):,.2f}'
+    return (('+' if x >= 0 else '−') + s) if sign else s
+
+
+def when(t, clock=True):
+    d = datetime.datetime.fromtimestamp(t, TZ)
+    return f'{d.day} {d:%b %H:%M}' if clock else f'{d.day} {d:%b}'
+
+
+def life_rows(p, m):
+    """A resolved pick's story, oldest first, as (time, label, text, reason or None): entering the book with the price and
+    fair value then, each change of fair value (the reason shown with the last one), the wallet's buys and sales (fills
+    of the same day and side together), resolution and redemption."""
+    rows, hist = [], p.get('hist') or []
+    if not hist:  # a pick from before the history was kept: what the book still knows
+        hist = [dict(at=p['added'], ev='add', how='position' if p.get('origin') == 'position' else 'hunt'),
+                dict(at=p.get('reviewed') or p['added'], ev='fair', fair=p.get('fair'), why=p.get('why') or '')]
+    prev, last_change = None, None  # the last change of fair value shows its reason
+    for i, x in enumerate(hist):
+        if x['ev'] == 'add':
+            prev = x.get('fair')
+        elif x['ev'] == 'fair' and x.get('fair') is not None and x['fair'] != prev:
+            last_change, prev = i, x['fair']
+    prev = None
+    for i, x in enumerate(hist):
+        t, clock = ts(x['at']), len(str(x['at'])) > 10
+        if x['ev'] == 'add':
+            bits = [f"{p['side']} at a {px(x['ask'])} ask" if x.get('ask') else f"{p['side']}, no ask"]
+            if x.get('fair') is not None:
+                bits.append(f"fair {fv(x['fair'])}")
+                if x.get('ask'):
+                    bits.append(f"{(x['fair'] / x['ask'] - 1) * 100:+.0f}% to resolution")
+            how = 'Into the book from the wallet' if x.get('how') == 'position' else 'Picked'
+            rows.append((t, when(t, clock), f"{how}: {', '.join(bits)}", x.get('why')))
+            prev = x.get('fair')
+        elif x['ev'] == 'drop':
+            rows.append((t, when(t, clock), 'Dropped from the book', x.get('why')))
+        elif x.get('fair') is not None and x['fair'] != prev:
+            text = f"Fair {fv(prev)} → {fv(x['fair'])}" if prev is not None else f"Fair {fv(x['fair'])}"
+            rows.append((t, when(t, clock), text, x.get('why') if i == last_change else None))
+            prev = x['fair']
+    tr = (p.get('life') or {}).get('trades') or []
+    groups = {}
+    for x in tr:
+        if x['kind'] == 'TRADE':
+            g = groups.setdefault((datetime.datetime.fromtimestamp(x['t'], TZ).date(), x['side']),
+                                  dict(t=x['t'], n=0, sh=0.0, cost=0.0, usdc=0.0))
+            g['n'] += 1
+            g['sh'] += x['size']
+            g['cost'] += x['size'] * x['px']
+            g['usdc'] += x['usdc']
+    for (_, side), g in groups.items():
+        fills = f" in {g['n']} fills" if g['n'] > 1 else ''
+        rows.append((g['t'], when(g['t']), f"{'Bought' if side == 'BUY' else 'Sold'} {g['sh']:,.0f} shares at "
+                                           f"{g['cost'] / g['sh']:.3f} for {usd(g['usdc'], False)}{fills}", None))
+    if p.get('resolved_at'):
+        t = ts(p['resolved_at'])
+        early = (datetime.date.fromisoformat(p['end']) - datetime.date.fromisoformat(p['resolved_at'][:10])).days
+        early = f", {early} days before its end date" if early >= 2 else ''
+        rows.append((t, when(t), f"Resolved: {p['side']} {'won' if p['won'] else 'lost'}{early}", None))
+    for x in tr:
+        if x['kind'] == 'REDEEM':
+            rows.append((x['t'], when(x['t']), f"Redeemed {x['size']:,.0f} shares for {usd(x['usdc'], False)}", None))
+    if m and m['pay'] > 0.005 and not m['redeemed']:
+        rows.append((int(NOW.timestamp()), 'Now', f"{m['left']:,.0f} shares to redeem for {usd(m['pay'], False)}", None))
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+
+def spark_html(p):
+    """Our side's price from the pick's first day in the book to resolution, my fair value as a dashed step line (broken
+    while the pick was out of the book) and the wallet's buys and sales as dots. GRAVE_JS adds the crosshair."""
+    series = (p.get('life') or {}).get('series') or []
+    if len(series) < 2:
+        return ''
+    x0, x1 = series[0][0], series[-1][0]
+    steps = []  # (time, fair or None)
+    for x in p.get('hist') or []:
+        if x['ev'] == 'drop':
+            steps.append((ts(x['at']), None))
+        elif x.get('fair') is not None:
+            steps.append((ts(x['at']), x['fair']))
+    groups = {}
+    for x in (p.get('life') or {}).get('trades') or []:
+        if x['kind'] == 'TRADE' and x0 <= x['t'] <= x1:
+            g = groups.setdefault((datetime.datetime.fromtimestamp(x['t'], TZ).date(), x['side']), [x['t'], 0.0, 0.0])
+            g[1] += x['size']
+            g[2] += x['size'] * x['px']
+    dots = [(side, g[0], g[2] / g[1], g[1]) for (_, side), g in groups.items() if g[1]]
+    vals = [v for _, v in series] + [f for t, f in steps if f is not None and t <= x1] + [d[2] for d in dots]
+    lo, hi = min(vals), max(vals)
+    pad = max((hi - lo) * 0.08, 0.01)
+    lo, hi = max(0.0, lo - pad), min(1.0, hi + pad)
+    X = lambda t: (min(max(t, x0), x1) - x0) / (x1 - x0) * 1000
+    Y = lambda v: (hi - v) / (hi - lo) * 100
+    line = ' '.join(f'{X(t):.1f},{Y(v):.2f}' for t, v in series)
+    path = []
+    for i, (t, f) in enumerate(steps):
+        if f is None or t > x1:
+            continue
+        end = steps[i + 1][0] if i + 1 < len(steps) else x1
+        if path and i and steps[i - 1][1] is not None:
+            path.append(f'V{Y(f):.2f}')
+        else:
+            path.append(f'M{X(t):.1f},{Y(f):.2f}')
+        path.append(f'H{X(min(end, x1)):.1f}')
+    pct_x = lambda t: X(t) / 10
+    marks = ''.join(f'<span class="dot{" sell" if side == "SELL" else ""}" style="left:{pct_x(t):.2f}%;top:{Y(v):.2f}%"></span>'
+                    for side, t, v, _ in dots)
+    label = (f"Price of {p['side']} from {series[0][1]:.2f} on {when(x0, False)} to {series[-1][1]:.2f} on {when(x1, False)}"
+             + (f", fair value last {fv(steps[-1][1])}" if steps and steps[-1][1] is not None else ''))
+    fair_data = ' '.join(f"{t},{'' if f is None else f}" for t, f in steps)
+    return (f'<div class="spark" role="img" aria-label="{esc(label)}" data-x0="{x0}" data-x1="{x1}" data-lo="{lo:.4f}" '
+            f'data-hi="{hi:.4f}" data-pts="{" ".join(f"{t},{v}" for t, v in series)}" data-fair="{fair_data}">'
+            f'<svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">'
+            f'<path class="fl" d="{" ".join(path)}" vector-effect="non-scaling-stroke"/>'
+            f'<polyline class="pl" points="{line}" vector-effect="non-scaling-stroke"/></svg>{marks}'
+            f'<span class="yl" style="top:0">{hi:.2f}</span><span class="yl lo" style="top:100%">{lo:.2f}</span>'
+            f'<span class="xl" style="left:0">{when(x0, False)}</span><span class="xl" style="right:0">{when(x1, False)}</span></div>'
+            f'<p class="key"><span class="k-pl"></span>price of {p["side"]}<span class="k-fl"></span>my fair value'
+            + ('<span class="k-buy"></span>buy' if any(d[0] == 'BUY' for d in dots) else '')
+            + ('<span class="k-sell"></span>sale' if any(d[0] == 'SELL' for d in dots) else '') + '</p>')
+
+
+def grave_html(p):
+    """One resolved pick as a card: the result, the money, the price path and the story from entering the book."""
+    m = money(p)
+    won = p['won']
+    res = f'<b class="res {"up" if won else "down"}">{"Won" if won else "Lost"}</b>'
+    fairs = [x['fair'] for x in p.get('hist') or [] if x.get('fair') is not None] or ([p['fair']] if p.get('fair') is not None else [])
+    fair_cell = (f'{fv(fairs[0])} → {fv(fairs[-1])}' if len(fairs) > 1 and fairs[0] != fairs[-1]
+                 else fv(fairs[-1]) if fairs else '–')
+    if m:
+        head = (f'<div class="g-pl {"up" if m["pnl"] >= 0 else "down"}"><b>{usd(m["pnl"])}</b>'
+                f'<span>{m["ret"] * 100:+.1f}% in {max(round(m["days"]), 1)} day{"s" if round(m["days"]) != 1 else ""}</span></div>')
+        nums = [('In', usd(m['cost'], False)), ('Back', usd(m['back'], False)), ('A year', pct(m['ann'])), ('Fair', fair_cell)]
+    else:
+        a = first_add(p)
+        paper = ((1.0 if won else 0.0) / a['ask'] - 1) if a and a.get('ask') else None
+        head = (f'<div class="g-pl {"up" if (paper or 0) >= 0 else "down"}"><b>{pct(paper) if paper is not None else "–"}</b>'
+                f'<span>not held: at the {px(a["ask"])} ask</span></div>' if paper is not None else
+                '<div class="g-pl"><b>–</b><span>not held</span></div>')
+        nums = [('Ask then', px(a['ask']) if a and a.get('ask') else '–'), ('Paid', '$1' if won else '$0'),
+                ('In book', f"{max((ts(p['resolved_at']) - ts(a['at'])) // 86400, 0)} days" if a and p.get('resolved_at') else '–'),
+                ('Fair', fair_cell)]
+    rows = ''.join(f'<li><time>{esc(label)}</time><div>{esc(text)}{f"<p class=why>{esc(why)}</p>" if why else ""}</div></li>'
+                   for _, label, text, why in life_rows(p, m))
+    return (f'<article class="grave" id="r{esc(p["id"])}"><div class="g-head"><div><a href="{esc(p["url"])}">{esc(p["name"])}</a>'
+            f'<div class="meta">{side_pill(p)}{res}{"<span class=held>Held</span>" if m else ""}</div></div>{head}</div>'
+            f'<dl class="g-nums">{"".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in nums)}</dl>'
+            f'{spark_html(p)}<ol class="life">{rows}</ol></article>')
+
+
+def graves_html(resolved):
+    ms = [money(p) for p in resolved]
+    won = sum(1 for p in resolved if p['won'])
+    held = [m for m in ms if m]
+    tally = f"{won} won, {len(resolved) - won} lost"
+    if held:
+        cost, pnl = sum(m['cost'] for m in held), sum(m['pnl'] for m in held)
+        tally += (f". The wallet held {len(held)} of them: {usd(cost, False)} in, {usd(cost + pnl, False)} back, "
+                  f"<b class=\"{'up' if pnl >= 0 else 'down'}\">{usd(pnl)}</b> ({pnl / cost * 100:+.1f}%)")
+    return (f'<section id="hunt-resolved"><h3>Resolved since the last run: {len(resolved)}</h3><p class="note">{tally}. '
+            'Each bet from the day it entered the book: the price and my fair value then, every change of fair value, '
+            'the wallet\'s buys and sales, resolution and redemption. <b>In</b> is what the buys cost, fees included; '
+            '<b>Back</b> is what sales fetched plus $1 a share held at resolution when our side won; <b>A year</b> is the '
+            f'return over the days from the first buy to resolution, as a yearly rate (at least {ANN_MIN_DAYS} days).</p>'
+            f'<div class="graves">{"".join(grave_html(p) for p in resolved)}</div></section>')
 
 
 def side_pill(p):
@@ -1244,13 +1527,8 @@ def render(st, main, extra, noask, held):
     if st['notes']:
         boxes.append('<div class="box warn" id="hunt-changes"><h3>What changed</h3><ul>' +
                      ''.join(f'<li>{esc(n)}</li>' for n in st['notes']) + '</ul></div>')
-    if st['resolved']:
-        boxes.append('<div class="box" id="hunt-resolved"><h3>Resolved since the last run</h3><ul>' + ''.join(
-            f'<li><a href="{esc(p["url"])}">{esc(p["name"])}</a>: our {p["side"]} '
-            f'<b class="{"up" if p["won"] else "down"}">{"won" if p["won"] else "lost"}</b>'
-            f'{" (held)" if p.get("held") else ""}</li>' for p in st['resolved']) +
-            '</ul></div>')
     boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
+    resolved_html = graves_html(st['resolved']) if st['resolved'] else ''
     # the hunt's tabs in the page's top menu, in page order, with their counts: the main parts of the section
     # (Slower and Dropped have none, at Mads's request on 17 Nov; the main list is "Picks" in its tab and heading)
     tabs = [('Hunt', 'hunt', None)]
@@ -1409,6 +1687,52 @@ def render(st, main, extra, noask, held):
   ul.plain li {{ padding-top: 10px; border-top: 1px solid var(--rule); }}
   ul.plain a {{ font-weight: 600; }}
   .li-body {{ color: var(--muted); font-size: 13.5px; }}
+  /* Resolved since the last run: one card per bet, from entering the book to resolution */
+  .graves {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 14px; align-items: start; }}
+  .grave {{ background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; display: grid;
+            gap: 12px; min-width: 0; scroll-margin-top: 64px; }}
+  .g-head {{ display: flex; justify-content: space-between; align-items: start; gap: 12px; }}
+  .g-head a {{ font-weight: 600; line-height: 1.35; }}
+  .res {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
+  .res.up {{ background: color-mix(in srgb, var(--up) 13%, transparent); }}
+  .res.down {{ background: color-mix(in srgb, var(--down) 13%, transparent); }}
+  .g-pl {{ text-align: right; font-family: var(--mono); white-space: nowrap; }}
+  .g-pl b {{ display: block; font-size: 20px; font-weight: 500; line-height: 1.2; }}
+  .g-pl span {{ font-size: 12px; color: var(--muted); }}
+  .g-pl.up b {{ color: var(--up); }} .g-pl.down b {{ color: var(--down); }}
+  .g-nums {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 8px 0;
+             border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }}
+  .g-nums div {{ display: grid; gap: 1px; min-width: 0; }}
+  .g-nums dt {{ font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
+  .g-nums dd {{ margin: 0; font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }}
+  .spark {{ position: relative; height: 84px; margin: 6px 0 16px; touch-action: pan-y; }}
+  .spark svg {{ position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }}
+  .spark .pl {{ fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }}
+  .spark .fl {{ fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 3; }}
+  .spark .dot, .spark .cd {{ position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%;
+                             background: var(--ink); box-shadow: 0 0 0 2px var(--surface); pointer-events: none; }}
+  .spark .dot.sell {{ background: var(--surface); border: 2px solid var(--ink); }}
+  .spark .yl {{ position: absolute; left: 0; font: 11px/1 var(--mono); color: var(--faint);
+                background: var(--surface); padding: 1px 4px 1px 0; pointer-events: none; }}
+  .spark .yl.lo {{ transform: translateY(-100%); }}
+  .spark .xl {{ position: absolute; top: calc(100% + 5px); font: 11px/1 var(--mono); color: var(--faint); }}
+  .spark .cx {{ position: absolute; top: 0; bottom: 0; width: 1px; background: var(--faint); display: none; pointer-events: none; }}
+  .spark .cd {{ background: var(--accent); display: none; }}
+  .spark .tip {{ position: absolute; top: -8px; transform: translate(-50%, -100%); display: none; pointer-events: none; z-index: 1;
+                 font: 12px/1.4 var(--mono); white-space: nowrap; padding: 3px 8px; border-radius: 6px;
+                 background: var(--surface-2); border: 1px solid var(--rule); color: var(--ink); }}
+  .spark.on .cx, .spark.on .cd, .spark.on .tip {{ display: block; }}
+  .key {{ margin: -4px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; color: var(--muted); }}
+  .key span {{ display: inline-block; margin-left: 8px; }}
+  .key span:first-child {{ margin-left: 0; }}
+  .key .k-pl {{ width: 16px; height: 2px; background: var(--accent); }}
+  .key .k-fl {{ width: 16px; border-top: 1.5px dashed var(--muted); }}
+  .key .k-buy, .key .k-sell {{ width: 9px; height: 9px; border-radius: 50%; background: var(--ink); }}
+  .key .k-sell {{ background: none; border: 2px solid var(--ink); }}
+  ol.life {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13.5px; }}
+  ol.life li {{ display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; }}
+  ol.life time {{ font-family: var(--mono); font-size: 12px; color: var(--muted); padding-top: 2px; white-space: nowrap; }}
+  ol.life .why {{ margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }}
   footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: grid; gap: 6px; }}
   footer p {{ margin: 0; }}
   @media (max-width: 720px) {{
@@ -1417,6 +1741,8 @@ def render(st, main, extra, noask, held):
     .stat, .stat + .stat {{ padding: 12px 12px 12px 0; border-left: 0; border-bottom: 1px solid var(--rule); }}
     .stat.goldk {{ padding-left: 12px; }}
     .boxes {{ grid-template-columns: 1fr; }}
+    .g-nums {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    ol.life li {{ grid-template-columns: 1fr; gap: 0; }}
   }}
   @media (max-width: 1040px) {{
     table.hunt thead {{ display: none; }}
@@ -1500,6 +1826,7 @@ def render(st, main, extra, noask, held):
     <div class="stat"><span class="k">Changes today</span>{changes}</div>
   </div>
   {boxes_html}
+  {resolved_html}
   {held_html}
   <section id="hunt-main"><h3>{main_h2}</h3>{main_html}</section>
   {extra_html}
@@ -1539,6 +1866,9 @@ def render(st, main, extra, noask, held):
 </script>
 <script>
 {SORT_JS}
+</script>
+<script>
+{GRAVE_JS}
 </script>
 ''', nav
 
@@ -1841,6 +2171,34 @@ REFRESH_JS = r"""
 # The positions table's sortable heads: a click sorts by that column's cells' data-v (first click in the head's
 # data-first direction, the next one reversed), cells without a value last and ties in the build's order (data-i).
 # The # column counts the rows as shown. A refresh (REFRESH_JS's 'hunt:refreshed') re-sorts at the new figures.
+# The Resolved cards' price charts: a crosshair on the nearest point under the pointer, with its time, price and my fair
+# value then. The page is static; nothing is fetched.
+GRAVE_JS = r"""
+document.querySelectorAll('#hunt-resolved .spark').forEach(el => {
+  const pts = el.dataset.pts.split(' ').map(s => s.split(',').map(Number));
+  const fair = el.dataset.fair.split(' ').filter(Boolean).map(s => { const [t, f] = s.split(','); return [+t, f === '' ? null : +f]; });
+  const x0 = +el.dataset.x0, x1 = +el.dataset.x1, lo = +el.dataset.lo, hi = +el.dataset.hi;
+  const [cx, cd, tip] = ['cx', 'cd', 'tip'].map(c => { const s = document.createElement('span'); s.className = c; el.append(s); return s; });
+  const fmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
+  const show = e => {
+    const r = el.getBoundingClientRect(), t = x0 + (x1 - x0) * Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1);
+    let best = pts[0], f = null;
+    for (const p of pts) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+    for (const [ft, fv] of fair) if (ft <= best[0]) f = fv;
+    const x = (best[0] - x0) / (x1 - x0) * 100;
+    cx.style.left = cd.style.left = x + '%';
+    cd.style.top = (hi - best[1]) / (hi - lo) * 100 + '%';
+    tip.textContent = fmt.format(best[0] * 1000) + ' · ' + best[1].toFixed(3) + (f == null ? '' : ' · fair ' + f.toFixed(f >= 0.95 || f <= 0.05 ? 3 : 2));
+    tip.style.left = Math.min(Math.max(x, 18), 82) + '%';
+    el.classList.add('on');
+  };
+  el.addEventListener('pointermove', show);
+  el.addEventListener('pointerdown', show);
+  el.addEventListener('pointerleave', () => el.classList.remove('on'));
+});
+"""
+
+
 SORT_JS = r"""
 (() => {
   const table = document.getElementById('hunt-held-table');
