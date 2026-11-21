@@ -2148,7 +2148,8 @@ REFRESH_JS = r"""
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
       // a position: what it cost and its average entry, e.g. "$309 @ 0.42"
       const held = m.own && m.own.size > 0 && m.own.avg > 0 ? `$${Math.round(m.own.size * m.own.avg).toLocaleString('en-US')} @ ${px(m.own.avg)}` : 'held';
-      const sub = [m.side, m.kind === 'bid' ? `${held}, best bid` : 'best ask', m.rec].filter(Boolean).join(' · ');
+      // which quote the change tracks shows in the prices line (in ink), so the line doesn't name it
+      const sub = [m.side, m.kind === 'bid' ? held : '', m.rec].filter(Boolean).join(' · ');
       // the market on Polymarket, in a new tab so the refreshed prices stay on screen
       return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
              `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div><span class="mchart" data-i="${i}"></span>` +
