@@ -1542,7 +1542,7 @@ def render(st, main, extra, noask, held):
     if noask:
         tabs.append(('No sellers', 'hunt-noask', len(noask)))
     button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-sell-depth="{SELL_DEPTH}" data-min-days="{ANN_MIN_DAYS}" '
-        f'data-main="{MAIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" '
+        f'data-main="{MAIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" data-built-ts="{int(NOW.timestamp())}" '
         f'data-wallet="{WALLET}" '
         f'title="Fetch the current order books, your positions and your P/L from Polymarket: redo the bids, asks, returns and '
         f'recommendations at those prices and redraw the Profit/Loss chart. Fair values and the ranking stay as built.">'
@@ -1785,8 +1785,10 @@ def render(st, main, extra, noask, held):
   .moves-list li {{ display: grid; grid-template-columns: minmax(0, 1fr) auto 64px; gap: 4px 16px; align-items: baseline; padding: 11px 0;
                     border-top: 1px solid var(--rule); }}
   .moves-list a {{ font-weight: 600; line-height: 1.35; }}
-  .moves-list .sub {{ grid-column: 1; font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: normal; }}
-  .moves-list .fair {{ grid-column: 2 / -1; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
+  .moves-list .sub {{ grid-column: 1; grid-row: 2 / span 2; font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: normal; }}
+  /* the mini chart (REFRESH_JS draws it once the price history arrives) under the change, the fair value under it */
+  .moves-list .mchart {{ grid-column: 2 / -1; grid-row: 2; justify-self: end; align-self: start; width: 112px; height: 30px; margin-top: 4px; }}
+  .moves-list .fair {{ grid-column: 2 / -1; grid-row: 3; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
   .moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
   .moves-list .chg {{ color: var(--muted); }}
   .moves-list .d {{ font-weight: 600; }}
@@ -1798,10 +1800,11 @@ def render(st, main, extra, noask, held):
     /* the name takes its own line, the numbers sit under it */
     .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
     .moves-list a {{ grid-column: 1 / -1; }}
-    .moves-list .sub {{ grid-row: 2 / span 2; }}
+    .moves-list .sub {{ grid-row: 2 / span 3; }}
     .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
     .moves-list .d {{ grid-column: 3; grid-row: 2; }}
-    .moves-list .fair {{ grid-row: 3; }}
+    .moves-list .mchart {{ grid-row: 3; }}
+    .moves-list .fair {{ grid-row: 4; }}
   }}
   @media print {{ display: none; }}
 }}
@@ -2063,22 +2066,72 @@ REFRESH_JS = r"""
     const e = econ(b.ask, +li.dataset.fair, li.dataset.end, li.dataset.hold === '1');
     out.textContent = ` · ask now ${px(b.ask)} (${bid}), ${pct(e.tot)} to resolution, ${pct(e.ann)} a year`;
   };
-  // The card after a refresh: the prices that moved most since the reader last saw them (the build, then each refresh).
+  // The card after a refresh: the prices that moved most since the morning build. Every refresh compares with the
+  // build's quotes, not the refresh before, so a move adds up over the day.
   // It ships hidden in this section and belongs under the Profit/Loss card (under the summary if there is none).
-  const box = document.getElementById('hunt-moves'), seen = new Map(), TOP = 10;
+  const box = document.getElementById('hunt-moves'), TOP = 10, T0 = +btn.dataset.builtTs || 0;
   const spot = document.getElementById('pnl') || document.getElementById('summary');
   if (box && spot) spot.after(box);
   // While the card shows, the top menu has a tab for it, after the tab of the card it sits under (NAV_JS lights it)
   const after = box && spot && document.querySelector(`.topnav .tabs a[href="#${spot.id}"]`);
   const tab = Object.assign(document.createElement('a'), { href: '#hunt-moves', textContent: 'Recent moves' });
   const showTab = on => { if (!after) return; if (!on) tab.remove(); else if (!tab.isConnected) after.after(tab); };
-  let sinceText = `the page was built at ${btn.dataset.built}`;
+  const cph = o => new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Copenhagen', ...o });
+  const sinceText = () => {  // "this morning's build at 07:15"; the day too when the page is older than today
+    if (!T0) return `the page was built at ${btn.dataset.built}`;
+    const day = cph({ dateStyle: 'short' });
+    if (day.format(T0 * 1000) !== day.format(Date.now()))
+      return `the build on ${cph({ weekday: 'short', day: 'numeric', month: 'short' }).format(T0 * 1000)} at ${btn.dataset.built}`;
+    return +cph({ hour: '2-digit', hourCycle: 'h23' }).format(T0 * 1000) < 12
+      ? `this morning's build at ${btn.dataset.built}` : `the page was built at ${btn.dataset.built}`;
+  };
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const num = s => s === '' || s == null || isNaN(+s) ? null : +s;
-  const quote = el => {  // which price a row tracks (the bid on anything you hold), and what it showed before this refresh
+  const quote = el => {  // which price a row tracks (the bid on anything you hold), and what the build showed (none on a no-sellers line)
     const kind = el.tagName === 'TR' && el.dataset.held === '1' ? 'bid' : 'ask';
-    const prev = seen.has(el) ? seen.get(el)[kind] : el.tagName === 'LI' ? null : num(el.dataset[kind]);
-    return { kind, prev };
+    return { kind, prev: el.tagName === 'LI' ? null : num(el.dataset[kind]) };
+  };
+  // A move's mini chart, drawn as the positions table's (spark() in refresh.py, whose HOVER_JS gives it the readout):
+  // Polymarket's price from the build to now, the dashed line at its level at the build. It is green when that move
+  // is good for you, as the change beside it: up on a position, down on a pick you'd buy.
+  const SW = 112, SH = 30, SPAD = 3;
+  const cents = p => (p * 100).toFixed(1).replace(/\.0$/, '') + '¢';
+  const sparkSvg = (pts, kind) => {
+    const ps = pts.map(p => p[1]), t0 = pts[0][0], t1 = pts[pts.length - 1][0], end = pts[pts.length - 1];
+    let lo = Math.min(...ps), hi = Math.max(...ps);
+    if (hi - lo < 0.01) { const mid = (hi + lo) / 2; lo = mid - 0.005; hi = mid + 0.005; }  // keep a flat line from filling the box
+    const x = t => t1 > t0 ? (t - t0) / (t1 - t0) * SW : SW, y = p => SPAD + (hi - p) / (hi - lo) * (SH - 2 * SPAD);
+    const dir = Math.round((end[1] - ps[0]) * 100), b = y(ps[0]).toFixed(1);
+    const tone = !dir ? 'flat' : (kind === 'bid') === (dir > 0) ? 'up' : 'down';
+    return `<svg class="spark ${tone}" viewBox="0 0 ${SW} ${SH}" width="${SW}" height="${SH}" role="img" ` +
+           `aria-label="Price since the build, ${cents(lo)} to ${cents(hi)}" data-t="${pts.map(p => p[0]).join(' ')}" data-p="${ps.join(' ')}">` +
+           `<line x1="0" x2="${SW}" y1="${b}" y2="${b}" class="base"/>` +
+           `<polyline points="${pts.map(([t, p]) => `${x(t).toFixed(1)},${y(p).toFixed(1)}`).join(' ')}"/>` +
+           `<circle cx="${x(end[0]).toFixed(1)}" cy="${y(end[1]).toFixed(1)}" r="2"/>` +
+           `<g class="hover"><line y1="0" y2="${SH}"/><circle r="2.5"/></g></svg>`;
+  };
+  // [[t, price]] from the build to t1, as price_24h_ago() in refresh.py: the first point is the price at the build
+  const history = async (token, t1) => {
+    const fid = Math.max(1, Math.round((t1 - T0) / 6000));  // minutes per point: about 100 points however long since the build
+    const r = await fetch(`https://clob.polymarket.com/prices-history?market=${token}&startTs=${T0 - 7200}&endTs=${t1}&fidelity=${fid}`);
+    const h = r.ok ? (await r.json()).history || [] : [];
+    if (!h.length) return null;
+    const before = h.filter(p => p.t <= T0), start = before.length ? before[before.length - 1] : h[0];
+    return [[T0, start.p], ...h.filter(p => p.t > T0).map(p => [p.t, p.p])];
+  };
+  let drawn = 0;  // the refresh whose charts may still land: a later one's list replaces the slots
+  const drawCharts = shown => {
+    if (!T0) return;
+    const run = ++drawn, t1 = Math.floor(Date.now() / 1000);
+    shown.forEach(async (m, i) => {
+      let pts = null;
+      try { pts = await history(m.token, t1); } catch (err) { /* the slot stays empty */ }
+      const slot = box.querySelector(`#moves-list .mchart[data-i="${i}"]`);
+      if (run !== drawn || !slot || !pts) return;
+      if (m.mid != null) pts.push([t1, m.mid]);  // the book's midpoint now, as Polymarket prices it
+      slot.innerHTML = sparkSvg(pts, m.kind);
+      if (window.sparkHover) window.sparkHover(slot.firstChild);
+    });
   };
   const showMoves = (moves, total) => {
     if (!box) return;
@@ -2086,8 +2139,8 @@ REFRESH_JS = r"""
     // a quote that appeared or vanished outranks any move in cents; then the bigger move first
     moves.sort((a, b) => (b.d == null) - (a.d == null) || Math.abs(b.d || 0) - Math.abs(a.d || 0));
     const seenTok = new Set(), uniq = moves.filter(m => !seenTok.has(m.token) && seenTok.add(m.token));
-    box.querySelector('#moves-since').textContent = `Since ${sinceText}`;
-    list.innerHTML = uniq.slice(0, TOP).map(m => {
+    box.querySelector('#moves-since').textContent = `Since ${sinceText()}`;
+    list.innerHTML = uniq.slice(0, TOP).map((m, i) => {
       const tone = m.good ? 'up' : 'down';
       const d = m.d == null ? (m.now == null ? 'gone' : 'new')
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
@@ -2097,17 +2150,20 @@ REFRESH_JS = r"""
                    m.rec].filter(Boolean).join(' · ');
       // the market on Polymarket, in a new tab so the refreshed prices stay on screen
       return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
-             `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div>` +
+             `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div><span class="mchart" data-i="${i}"></span>` +
              `<span class="fair">${m.fair == null ? 'no fair value yet' : 'fair ' + fv(m.fair)}</span></li>`;  // as built, never recomputed
     }).join('');
     list.hidden = !uniq.length;
     let empty = box.querySelector('.moves-empty');
     if (!uniq.length && !empty) { empty = document.createElement('p'); empty.className = 'moves-empty'; list.after(empty); }
-    if (empty) { empty.hidden = !!uniq.length; empty.textContent = 'No price has moved.'; }
+    if (empty) { empty.hidden = !!uniq.length; empty.textContent = 'No price has moved since the build.'; }
     box.querySelector('#moves-foot').textContent = uniq.length
-      ? `${uniq.length} of ${total} prices moved${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. Green is good for you: a cheaper ask, or a higher bid on a position. Fair is my estimate from the build, not redone.`
+      ? `${uniq.length} of ${total} prices moved since the build${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. ` +
+        'Green is good for you: a cheaper ask, or a higher bid on a position. The chart is Polymarket\'s price since the build, ' +
+        'the dashed line its level then. Fair is my estimate from the build, not redone.'
       : '';
     box.hidden = false; showTab(true);
+    drawCharts(uniq.slice(0, TOP));
   };
   if (box) box.querySelector('#moves-close').addEventListener('click', () => { box.hidden = true; showTab(false); });
   const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('hunt-asks-at');
@@ -2132,7 +2188,6 @@ REFRESH_JS = r"""
         if (!b) continue;
         const { kind, prev } = quote(el), now = b[kind] || null;
         if (el.tagName === 'LI') noSeller(el, b); else if (el.dataset.size) held(el, b); else pick(el, b);
-        seen.set(el, { ask: b.ask || null, bid: b.bid || null });
         if (prev == null && now == null) continue;
         const d = prev == null || now == null ? null : now - prev;
         if (d != null && Math.abs(d) < 5e-4) continue;
@@ -2143,15 +2198,16 @@ REFRESH_JS = r"""
         const ann = fair == null || now == null ? '' : pct(kind === 'bid' ? holdEcon(now, fair, end, hold, 0).ann : econ(now, fair, end, hold).ann);
         // shares and average entry: the wallet now, else the build's (a position row's data-size/data-avg)
         const own = kind !== 'bid' ? null : (pos && pos.get(el.dataset.token)) || { size: num(el.dataset.size), avg: num(el.dataset.avg) };
+        // the chart's last point: the book's midpoint, which Polymarket shows as the price while the spread is 10¢ or less
+        const mid = b.bid && b.ask && b.ask - b.bid <= 0.1 + 1e-9 ? (b.bid + b.ask) / 2 : null;
         moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
-                     fair, own, href: a ? a.getAttribute('href') : '#',
+                     fair, own, mid, href: a ? a.getAttribute('href') : '#',
                      name: a ? a.textContent : '', side: side ? side.textContent : '', ann,
                      rec: call ? call.textContent : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
       showMoves(moves, by.size);
       document.dispatchEvent(new CustomEvent('hunt:refreshed'));  // SORT_JS re-sorts the positions at the new figures
-      sinceText = `the last refresh at ${t}`;
       when.textContent = t.slice(0, 5);
       const known = new Set(tokens), outside = pos ? [...pos.keys()].filter(k => !known.has(k)).length : 0;
       const posNote = !pos ? 'positions unavailable' : `${pos.size} positions` + (outside ? `, ${outside} not in the hunt until the next build` : '');
