@@ -1788,7 +1788,9 @@ def render(st, main, extra, noask, held):
   .moves-list .sub {{ grid-column: 1; grid-row: 2 / span 2; font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: normal; }}
   /* the mini chart (REFRESH_JS draws it once the price history arrives) under the change, the fair value under it */
   .moves-list .mchart {{ grid-column: 2 / -1; grid-row: 2; justify-self: end; align-self: start; width: 112px; height: 30px; margin-top: 4px; }}
-  .moves-list .fair {{ grid-column: 2 / -1; grid-row: 3; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
+  /* the book now and my fair value, under the chart; the quote the change tracks is in ink */
+  .moves-list .prices {{ grid-column: 2 / -1; grid-row: 3; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
+  .moves-list .prices b {{ font-weight: 400; color: var(--ink); }}
   .moves-list .chg, .moves-list .d {{ font-family: var(--mono); font-size: 14px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }}
   .moves-list .chg {{ color: var(--muted); }}
   .moves-list .d {{ font-weight: 600; }}
@@ -1800,11 +1802,11 @@ def render(st, main, extra, noask, held):
     /* the name takes its own line, the numbers sit under it */
     .moves-list li {{ grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px 12px; }}
     .moves-list a {{ grid-column: 1 / -1; }}
-    .moves-list .sub {{ grid-row: 2 / span 3; }}
+    .moves-list .sub {{ grid-row: 2 / span 2; }}
     .moves-list .chg {{ grid-column: 2; grid-row: 2; }}
     .moves-list .d {{ grid-column: 3; grid-row: 2; }}
     .moves-list .mchart {{ grid-row: 3; }}
-    .moves-list .fair {{ grid-row: 4; }}
+    .moves-list .prices {{ grid-column: 1 / -1; grid-row: 4; }}  /* too wide beside the text: its own line */
   }}
   @media print {{ display: none; }}
 }}
@@ -2144,13 +2146,14 @@ REFRESH_JS = r"""
       const tone = m.good ? 'up' : 'down';
       const d = m.d == null ? (m.now == null ? 'gone' : 'new')
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
-      // a position: what it cost and its average entry, e.g. "$309 held @ 0.42"
-      const held = m.own && m.own.size > 0 && m.own.avg > 0 ? `$${Math.round(m.own.size * m.own.avg).toLocaleString('en-US')} held @ ${px(m.own.avg)}` : 'held';
+      // a position: what it cost and its average entry, e.g. "$309 @ 0.42"
+      const held = m.own && m.own.size > 0 && m.own.avg > 0 ? `$${Math.round(m.own.size * m.own.avg).toLocaleString('en-US')} @ ${px(m.own.avg)}` : 'held';
       const sub = [m.side, m.kind === 'bid' ? `${held}, best bid` : 'best ask', m.rec].filter(Boolean).join(' · ');
       // the market on Polymarket, in a new tab so the refreshed prices stay on screen
       return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
              `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div><span class="mchart" data-i="${i}"></span>` +
-             `<span class="fair">${m.fair == null ? 'no fair value yet' : 'fair ' + fv(m.fair)}</span></li>`;  // as built, never recomputed
+             `<span class="prices">${['bid', 'ask'].map(k => k === m.kind ? `<b>${k} ${px(m[k])}</b>` : `${k} ${px(m[k])}`).join(' · ')} · ` +
+             `${m.fair == null ? 'no fair value yet' : 'fair ' + fv(m.fair)}</span></li>`;  // fair as built, never recomputed
     }).join('');
     list.hidden = !uniq.length;
     let empty = box.querySelector('.moves-empty');
@@ -2159,7 +2162,7 @@ REFRESH_JS = r"""
     box.querySelector('#moves-foot').textContent = uniq.length
       ? `${uniq.length} of ${total} prices moved since the build${uniq.length > TOP ? `; the ${TOP} biggest are shown` : ''}. ` +
         'Green is good for you: a cheaper ask, or a higher bid on a position. The chart is Polymarket\'s price since the build, ' +
-        'the dashed line its level then. Fair is my estimate from the build, not redone.'
+        'the dashed line its level then. Bid and ask are the book now; fair is my estimate from the build, not redone.'
       : '';
     box.hidden = false; showTab(true);
     drawCharts(uniq.slice(0, TOP));
@@ -2199,7 +2202,7 @@ REFRESH_JS = r"""
         // the chart's last point: the book's midpoint, which Polymarket shows as the price while the spread is 10¢ or less
         const mid = b.bid && b.ask && b.ask - b.bid <= 0.1 + 1e-9 ? (b.bid + b.ask) / 2 : null;
         moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
-                     fair, own, mid, href: a ? a.getAttribute('href') : '#',
+                     fair, own, mid, bid: b.bid || null, ask: b.ask || null, href: a ? a.getAttribute('href') : '#',
                      name: a ? a.textContent : '', side: side ? side.textContent : '',
                      rec: call ? call.textContent : '' });
       }
