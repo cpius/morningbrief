@@ -2146,8 +2146,7 @@ REFRESH_JS = r"""
         : `${m.d > 0 ? '+' : '−'}${Math.abs(m.d * 100).toFixed(1).replace(/\.0$/, '')}¢`;
       // a position: what it cost and its average entry, e.g. "$309 held @ 0.42"
       const held = m.own && m.own.size > 0 && m.own.avg > 0 ? `$${Math.round(m.own.size * m.own.avg).toLocaleString('en-US')} held @ ${px(m.own.avg)}` : 'held';
-      const sub = [m.side, m.kind === 'bid' ? `${held}, best bid` : 'best ask', m.ann && m.now != null ? `now ${m.ann} a year` : '',
-                   m.rec].filter(Boolean).join(' · ');
+      const sub = [m.side, m.kind === 'bid' ? `${held}, best bid` : 'best ask', m.rec].filter(Boolean).join(' · ');
       // the market on Polymarket, in a new tab so the refreshed prices stay on screen
       return `<li><a href="${esc(m.href)}" target="_blank" rel="noopener">${esc(m.name)}</a><span class="chg">${px(m.prev)} → ${px(m.now)}</span>` +
              `<span class="d ${tone}">${d}</span><div class="sub">${esc(sub)}</div><span class="mchart" data-i="${i}"></span>` +
@@ -2194,15 +2193,14 @@ REFRESH_JS = r"""
         const up = d == null ? now != null : d > 0;  // the quote rose, or one appeared
         const a = el.querySelector('a'), side = el.querySelector('.side'), tr = el.tagName === 'TR';
         const call = tr && cell(el, 'Rec') && cell(el, 'Rec').querySelector('b');
-        const fair = num(el.dataset.fair), end = el.dataset.end, hold = el.dataset.hold === '1';
-        const ann = fair == null || now == null ? '' : pct(kind === 'bid' ? holdEcon(now, fair, end, hold, 0).ann : econ(now, fair, end, hold).ann);
+        const fair = num(el.dataset.fair);
         // shares and average entry: the wallet now, else the build's (a position row's data-size/data-avg)
         const own = kind !== 'bid' ? null : (pos && pos.get(el.dataset.token)) || { size: num(el.dataset.size), avg: num(el.dataset.avg) };
         // the chart's last point: the book's midpoint, which Polymarket shows as the price while the spread is 10¢ or less
         const mid = b.bid && b.ask && b.ask - b.bid <= 0.1 + 1e-9 ? (b.bid + b.ask) / 2 : null;
         moves.push({ token: el.dataset.token, kind, prev, now, d, good: kind === 'bid' ? up : d == null ? up : !up,
                      fair, own, mid, href: a ? a.getAttribute('href') : '#',
-                     name: a ? a.textContent : '', side: side ? side.textContent : '', ann,
+                     name: a ? a.textContent : '', side: side ? side.textContent : '',
                      rec: call ? call.textContent : '' });
       }
       const t = new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/Copenhagen', hour: '2-digit', minute: '2-digit', second: '2-digit' });
