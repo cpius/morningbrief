@@ -627,14 +627,14 @@ if no_book:
 if redeem_value > 0.005:
     value_sub += f" · +{usd(redeem_value)} to redeem"
 
-# Hover readout for the 24h charts: time (Copenhagen), price and change since 24h ago at the nearest point.
+# Hover readout for the 24h charts (and Recent moves' charts): time (Copenhagen), price and change since the chart's start at the nearest point.
 HOVER_JS = r"""<div id="spark-tip" hidden></div>
 <script>
 (() => {
   const tip = document.getElementById('spark-tip');
   const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
   const c = p => (p * 100).toFixed(2).replace(/\.?0+$/, '') + '¢';
-  document.querySelectorAll('svg.spark[data-t]').forEach(svg => {
+  const bind = svg => {
     const ts = svg.dataset.t.split(' ').map(Number), ps = svg.dataset.p.split(' ').map(Number);
     const xy = svg.querySelector('polyline').getAttribute('points').split(' ').map(s => s.split(',').map(Number));
     const W = svg.viewBox.baseVal.width, line = svg.querySelector('.hover line'), dot = svg.querySelector('.hover circle');
@@ -655,7 +655,9 @@ HOVER_JS = r"""<div id="spark-tip" hidden></div>
     svg.addEventListener('pointermove', show);
     svg.addEventListener('pointerdown', show);
     svg.addEventListener('pointerleave', () => { svg.classList.remove('on'); tip.hidden = true; });
-  });
+  };
+  document.querySelectorAll('svg.spark[data-t]').forEach(bind);
+  window.sparkHover = bind;  // the Recent moves card (hunt.py's REFRESH_JS) binds the charts it draws after a refresh
   addEventListener('scroll', () => { tip.hidden = true; document.querySelectorAll('svg.spark.on').forEach(s => s.classList.remove('on')); }, { passive: true });
 })();
 </script>"""
