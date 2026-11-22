@@ -141,6 +141,7 @@ whatever their rate (slower ones included, sorted by rate among themselves) and 
     python3 hunt/hunt.py set|drop|add|note ...   # judgement: fair values, reasons, new picks, "what changed" lines
     python3 hunt/hunt.py ingest   # full review: read the research subagents' fair values, print MISSING/FLAG/BOOK DIFF
     python3 hunt/hunt.py smart    # smart-money share (top-20 holders scored by leaderboard PnL)
+    python3 hunt/hunt.py kpeek|kset ...   # Kalshi: a market's rules, prices and twin; confirm or reject its review
     python3 hunt/hunt.py build    # hunt/work/section.html (refresh.py puts it on the brief), site/hunt/*.json
 
 ### Full review
@@ -169,6 +170,35 @@ many Starship launches reach space in 2026?" stays in: its "less than 5" rung is
    (`add <event> <market id>`).
 
 The hunt section's stamp shows how many candidate markets were researched that day.
+
+### Kalshi (`hunt/kalshi.py`)
+
+Since 22 Nov 2026 the hunt also looks at Kalshi, the CFTC-regulated US exchange. Its market data needs no account
+(`api.elections.kalshi.com/trade-api/v2`, all of Kalshi's markets despite the name). Nothing is bought there: the wallet
+is on Polymarket, so Kalshi picks stay out of the book (no positions, smart money or history) and get a part of their own.
+
+1. `scan` sweeps every open Kalshi event (about 20,000, a minute) in the non-sports, non-crypto categories
+   (`kalshi.CATEGORIES`) and keeps candidates by the Polymarket bars plus open interest: at least 5,000 contracts
+   (`MIN_OI`), or 1,000 for a market with a Polymarket twin. That was 719 markets in 342 events on 22 Nov, a quarter
+   more than the Polymarket review. Their ids are `K:<ticker>`.
+2. `kalshi.match()` proposes a twin for each: the Polymarket candidate that ends within 7 days of it and shares its
+   words, weighted by rarity. The outcome's own words (a name, "Hike 25bps") must appear on the other side, and the rest
+   must overlap by half, which keeps "Kentucky Democratic primary: Newsom" off "Newsom wins the nomination" (98 twins on
+   22 Nov). A Kalshi event goes into the batch right after its twins' Polymarket event; a twin that lands in another
+   batch travels as `twin_question`/`twin_rules`.
+3. The reviewer prices Kalshi markets like the rest and adds `"twin": "same" | "wider" | "narrower" | "different"`:
+   whether the two resolve alike, or the Kalshi YES covers more cases (wider) or fewer (narrower).
+4. `ingest` prints `KFLAG` (a Kalshi side clears 30% a year and +3% at Kalshi's ask plus its fee, the fair value 5¢ or
+   more off Kalshi's mid), `PAIR` (a Kalshi leg plus the opposite Polymarket leg that together pay at least $1 whatever
+   happens, for 1% or more under $1 after both fees and 10% a year: same rules either way round, a wider YES with the
+   narrower one's NO) and `CHEAPER` (a book pick whose same-rules twin costs less on Kalshi). The routine checks them
+   with `kpeek` and records `kset K:<ticker> --fair <YES> --twin <rel> --why ...` or `kset ... --reject <why>`.
+5. `build` fetches live Kalshi and Polymarket prices for those and renders the Kalshi part (tab "Kalshi"): pairs,
+   Kalshi picks (at most 40), and book picks that are cheaper on Kalshi, each marked Checked or Reviewer only.
+
+Fees: Kalshi's taker fee is 0.07 × fee_multiplier × p × (1 − p) a contract (`kalshi.fee()`; the multiplier comes from
+`/series`, 1 for nearly all). Polymarket's, on the Polymarket leg of a pair, is the market's `feeSchedule.rate` × p ×
+(1 − p) a share (`poly_cost()`). The book's own returns still leave Polymarket's fee out.
 
 Claude Code caps WebSearch at 200 calls by default, shared by the main agent and every subagent, which the review
 outgrew (on 9 Nov 2026 the subagents ran out partway and later batches kept the previous day's values).

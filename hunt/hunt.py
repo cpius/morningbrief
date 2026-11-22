@@ -16,6 +16,9 @@ from the live site, so the cloud routine needs no git push. The repo copy hunt/s
     python3 hunt/hunt.py note "<one line on what changed>"
     python3 hunt/hunt.py ingest               # full review: read the subagents' fair values, print MISSING/FLAG/BOOK DIFF
     python3 hunt/hunt.py smart                # smart-money share from top holders and leaderboard PnL
+    python3 hunt/hunt.py kpeek <K:ticker>     # a Kalshi market: rules, live prices, its Polymarket twin, its review
+    python3 hunt/hunt.py kset <K:ticker> --fair F --twin same|wider|narrower|different --why W   # confirm a Kalshi review
+    python3 hunt/hunt.py kset <K:ticker> --reject W                                             # ... or set it aside
     python3 hunt/hunt.py build                # write the brief's hunt section (hunt/work/section.html) and site/hunt/*.json
 
 Return = fair / ask - 1, held to resolution, plus Polymarket's 3.25% APR holding reward where the market pays it.
@@ -38,12 +41,23 @@ either side clears the main list's bars at today's prices. The routine verifies 
 Each pick keeps its history (p['hist'], see log_fair): when it entered the book, at what ask and fair value, and every
 change of fair value since. When a pick resolves, `build` fetches its trail (the wallet's trades and redemptions, and
 the price of our side) and the Resolved section tells the bet's story from entry to payout, one card per bet.
+
+Kalshi (hunt/kalshi.py, since 22 Nov 2026): `scan` also sweeps Kalshi's open markets. Its candidates (id "K:<ticker>") go
+into the same review batches, each next to the Polymarket market that asks about the same thing (its twin) where
+there is one; the reviewer prices them like the rest and says how the twin's rules compare. `ingest` prints KFLAG lines
+(a Kalshi side clears the main list's bars after Kalshi's fee) and PAIR lines (Kalshi plus Polymarket legs that pay at
+least $1 whatever happens, for less than $1). The routine checks those with `kpeek` and confirms or rejects them with
+`kset`; `build` shows the Kalshi part (tab "Kalshi") at Kalshi's prices then. Kalshi picks are not in the book: the
+wallet is on Polymarket, so they carry no positions, smart money or history.
 Only the standard library is used.
 """
 import argparse, datetime, glob, gzip, html, json, os, re, shutil, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # also when hunt.py is loaded through importlib
+import kalshi  # hunt/kalshi.py, next to this file
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -80,6 +94,10 @@ REVIEW_KEEP_DAYS = 30   # forget a market's review once it is this old (the mark
 REVIEW_GAP = 0.05       # a review must differ from the mid (FLAG) or from a pick's fair value (BOOK DIFF) by this much
 REVIEW_MOVE = 0.05      # ask moved this much since the last run -> news check
 SOON_DAYS = 14          # ends this soon -> news check
+PAIR_MIN = 0.01         # a cross-venue pair must make at least this much to resolution ...
+PAIR_ANN = 0.10         # ... and this much a year
+KALSHI_SHOW = 40        # the Kalshi part lists at most this many Kalshi picks
+CHEAPER_MIN = 0.01      # a book pick is "cheaper on Kalshi" from this much a share less, fees included
 SMART_PNL = 50_000      # all-time PnL that counts as smart money
 SMART_MIN_USD = 300     # hide the smart-money share below this much smart money
 WALLET_TTL_DAYS = 30
@@ -452,6 +470,7 @@ def slim_event(e):
                               bid=m.get('bestBid'), ask=m.get('bestAsk'), end=(m.get('endDate') or '')[:10],
                               liq=float(m.get('liquidityNum') or m.get('liquidity') or 0),
                               hold=bool(m.get('holdingRewardsEnabled')),
+                              fee=(m.get('feeSchedule') or {}).get('rate') if m.get('feesEnabled') else None,
                               live=bool(m.get('active')) and not m.get('closed') and m.get('acceptingOrders', True))
                          for m in e.get('markets') or []])
 
@@ -575,12 +594,14 @@ def sync_positions(st):
                   f"{', removed from the book' if p.get('origin') == 'position' else ', stays in the hunt'}")
 
 
-def write_batches(st, events, cands, order, seen):
+def write_batches(st, events, cands, order, seen, glue=()):
     """Split today's candidates into files for the full review's research subagents, nearest end first.
 
     Each market carries its last review and, if it is in the book, the book's side and fair value, so the subagent can
     look only for news since then. A rerun the same day rewrites the batches but keeps today's results (ingest
-    matches them by market id); results from an earlier day are cleared.
+    matches them by market id); results from an earlier day are cleared. Kalshi events (ids "K:...", venue "kalshi")
+    come right after the Polymarket event of their twin; those in `glue` never start a batch, so a twin's two venues
+    are reviewed by the same subagent.
     """
     idx_path = os.path.join(BATCHES, 'index.json')
     if os.path.exists(idx_path) and read(idx_path).get('day') != str(TODAY):
@@ -593,7 +614,7 @@ def write_batches(st, events, cands, order, seen):
     groups, cur, n = [], [], 0
     for i in order:
         k = len(cands[i])
-        if cur and (len(cur) >= BATCH_EVENTS or n + k > BATCH_MARKETS):
+        if cur and i not in glue and (len(cur) >= BATCH_EVENTS or n + k > BATCH_MARKETS):
             groups.append(cur)
             cur, n = [], 0
         cur.append(i)
@@ -601,20 +622,35 @@ def write_batches(st, events, cands, order, seen):
     if cur:
         groups.append(cur)
     out = []
+    where = {m['id']: i for i in order for m in cands[i]}  # market id -> its event, to find a twin in another batch
     for g, ids in enumerate(groups, 1):
-        rows = []
+        rows, here = [], {m['id'] for i in ids for m in cands[i]}
         for i in ids:
             e = events[i]
             ms = []
             for m in cands[i]:
                 r, p = reviews.get(m['id']), book.get(m['id'])
-                ms.append(dict(id=m['id'], question=m['q'], option=m['g'] or None, yes_bid=float(m['bid']),
-                               yes_ask=float(m['ask']), end=m['end'], days=m['days'], liquidity=round(m['liq']), apr=m['hold'],
-                               last_review=dict(fair_yes=r['fair'], why=r['why'], day=r['day'],
-                                                **({'settles': r['settles']} if r.get('settles') else {})) if r else None,
-                               book=dict(side=p['side'], fair=p.get('fair'), why=p.get('why')) if p else None))
-            rows.append(dict(event=i, title=e['title'], url=f"https://polymarket.com/event/{e['slug']}",
+                row = dict(id=m['id'], question=m['q'], option=m['g'] or None, yes_bid=float(m['bid']),
+                           yes_ask=float(m['ask']), end=m['end'], days=m['days'],
+                           liquidity=round(m['liq']) if m.get('liq') is not None else None, apr=m['hold'],
+                           last_review=dict(fair_yes=r['fair'], why=r['why'], day=r['day'],
+                                            **({'settles': r['settles']} if r.get('settles') else {}),
+                                            **({'twin': r['twin']} if r.get('twin') else {})) if r else None,
+                           book=dict(side=p['side'], fair=p.get('fair'), why=p.get('why')) if p else None)
+                if m.get('venue') == 'kalshi':  # its own rules; and the Polymarket market it may match, in this file
+                    row.update(no_ask=m['no_ask'], open_interest=m['oi'], fee_multiplier=m['mult'], rules=m['rules'])
+                    if m.get('twin'):
+                        row['twin'] = m['twin']
+                        if m['twin'] not in here and m['twin'] in where:  # the twin landed in another batch: bring its text
+                            te = events[where[m['twin']]]
+                            tm = next(x for x in cands[where[m['twin']]] if x['id'] == m['twin'])
+                            row.update(twin_question=tm['q'], twin_option=tm['g'] or None,
+                                       twin_rules=(te.get('rules') or '')[:1500], twin_yes_bid=float(tm['bid']),
+                                       twin_yes_ask=float(tm['ask']))
+                ms.append(row)
+            rows.append(dict(event=i, title=e['title'], url=e.get('url') or f"https://polymarket.com/event/{e['slug']}",
                              new=i not in seen, rules=e.get('rules', ''), markets=ms,
+                             **({'venue': 'kalshi'} if e.get('venue') == 'kalshi' else {}),
                              **({'history': e['history']} if e.get('history') else {})))
         name = f'b{g:03d}'
         write(os.path.join(BATCHES, name + '.json'), rows)
@@ -624,6 +660,94 @@ def write_batches(st, events, cands, order, seen):
                         first_end=min(m['end'] for r in rows for m in r['markets'])))
     write(idx_path, dict(day=str(TODAY), batches=out))
     return out
+
+
+def poly_cost(price, rate):
+    """A Polymarket share bought at `price` with the market's taker fee (feeRate x p x (1 - p) a share; none if None)."""
+    return price + (rate or 0) * price * (1 - price)
+
+
+def kalshi_scan(st, events, cands):
+    """Sweep Kalshi (hunt/kalshi.py) and turn its candidates into review events, each next to its twins' Polymarket event.
+
+    Returns (kevents, kcands, after): Kalshi events by id "K:<event ticker>" (the shape of slim_event, plus url and
+    venue), their candidate markets (the shape of candidate_markets, plus the Kalshi fields), and for each event the
+    Polymarket event its twins belong to, or None. Writes st['kalshi']: what the sweep found, and a slim copy of every
+    Kalshi candidate (prices, end, fee, twin) and of every Polymarket twin, for ingest and build. If Kalshi can't be
+    reached, st['kalshi'] stays as it was and the review goes on without Kalshi."""
+    t0 = time.time()
+    try:
+        kev, mult, total = kalshi.sweep()
+    except Exception as e:
+        print(f'KALSHI unavailable ({e!r}); the review goes on without Kalshi today')
+        return {}, {}, {}
+    found = kalshi.candidates(kev, mult, TODAY, TITLE_NOISE, NOISE)
+    poly = [dict(id=m['id'], title=events[i]['title'], q=m['q'], g=m['g'], end=m['end'], event=i)
+            for i, ms in cands.items() for m in ms]
+    twins = kalshi.match([m for _, ms in found.values() for m in ms], poly)
+    pev = {p['id']: p['event'] for p in poly}
+    pmk = {m['id']: m for ms in cands.values() for m in ms}
+    kevents, kcands, after = {}, {}, {}
+    for et, (e, ms) in found.items():
+        keep = []
+        for m in ms:
+            tw = twins.get(m['id'])
+            if m['oi'] >= kalshi.MIN_OI or tw:
+                keep.append(dict(m, venue='kalshi', g=m['option'], bid=m['yes_bid'], ask=m['yes_ask'], liq=None,
+                                 hold=False, live=True, twin=tw[0] if tw else None, score=tw[1] if tw else None))
+        if not keep:
+            continue
+        kid = 'K:' + et
+        title = e.get('title') or ''
+        if kalshi.words(e.get('sub_title')) and e['sub_title'].lower() not in title.lower():  # not a date ("Before 2027")
+            title += f" ({e['sub_title']})"
+        kevents[kid] = dict(id=kid, title=title, slug='', url=keep[0]['url'], venue='kalshi', tags=[],
+                            rules=keep[0]['fine'], markets=[])
+        kcands[kid] = keep
+        near = Counter(pev[m['twin']] for m in keep if m['twin'])
+        after[kid] = near.most_common(1)[0][0] if near else None
+    markets = {m['id']: dict(ticker=m['ticker'], event=m['event'], name=m['q'], option=m['option'], url=m['url'],
+                             end=m['end'], mult=m['mult'], yes_bid=m['yes_bid'], yes_ask=m['yes_ask'], no_bid=m['no_bid'],
+                             no_ask=m['no_ask'], oi=m['oi'], twin=m['twin'], score=m['score'])
+               for ms in kcands.values() for m in ms}
+    tws = {}
+    for k in markets.values():
+        if k['twin']:
+            p, e = pmk[k['twin']], events[pev[k['twin']]]
+            tws[k['twin']] = dict(q=p['q'], url=f"https://polymarket.com/event/{e['slug']}", end=p['end'],
+                                  bid=float(p['bid']), ask=float(p['ask']), hold=p['hold'], fee=p.get('fee'), event=e['id'])
+    st['kalshi'] = dict(day=str(TODAY), at=at_now(), markets=markets, twins=tws,
+                        swept=dict(events=total, scope=len(kev), candidates=len(markets),
+                                   events_kept=len(kevents), twins=sum(1 for k in markets.values() if k['twin']),
+                                   secs=round(time.time() - t0)))
+    print(f"KALSHI {len(markets)} candidate markets in {len(kevents)} events, {sum(1 for k in markets.values() if k['twin'])} "
+          f"with a Polymarket twin, from {total:,} open Kalshi events ({time.time() - t0:.0f}s); they join the batches")
+    return kevents, kcands, after
+
+
+def kalshi_order(order, cands, kcands, after):
+    """The review order with the Kalshi events in it: each right after the Polymarket event of its twins (glued to it,
+    up to BATCH_MARKETS // 2 Kalshi markets, so they share its batch), the rest by days to their first end."""
+    first = lambda i, c: min(m['days'] for m in c[i])
+    by_after, loose = {}, []
+    for kid in sorted(kcands, key=lambda k: (first(k, kcands), k)):
+        if after.get(kid) in cands:
+            by_after.setdefault(after[kid], []).append(kid)
+        else:
+            loose.append(kid)
+    full, glue, j = [], set(), 0
+    for i in order:
+        while j < len(loose) and first(loose[j], kcands) < first(i, cands):
+            full.append(loose[j])
+            j += 1
+        full.append(i)
+        n = 0
+        for kid in by_after.get(i, []):
+            full.append(kid)
+            n += len(kcands[kid])
+            if n <= BATCH_MARKETS // 2:
+                glue.add(kid)
+    return full + loose[j:], glue
 
 
 def cmd_scan(a):
@@ -677,8 +801,10 @@ def cmd_scan(a):
         fh.write(f'# All {len(order)} candidate events ({len(new)} new since the last sweep, marked NEW), nearest end first. '
                  'Format: event id [days to first end, liquidity, APR = pays the holding reward] title :: market YES-mid; ...\n')
         fh.write('\n'.join(('NEW ' if i not in seen else '') + line(events[i], cands[i]) for i in order) + '\n')
-    batches = write_batches(st, events, cands, order, seen)
-    st['seen'] = sorted(seen | set(events))
+    kevents, kcands, after = kalshi_scan(st, events, cands)
+    full, glue = kalshi_order(order, cands, kcands, after)
+    batches = write_batches(st, {**events, **kevents}, {**cands, **kcands}, full, seen, glue)
+    st['seen'] = sorted(seen | set(events) | set(kevents))
     st['hold_events'] = len(hold_events)
     st['swept'] = dict(events=len(events), markets=sum(len(e['markets']) for e in events.values()))
     write(STATE, st)
@@ -888,6 +1014,8 @@ def cmd_ingest(a):
             settles = settle_date(r.get('settles'), wanted[mid][2]['end'])
             if settles:
                 reviews[mid]['settles'] = settles
+            if mid.startswith('K:') and wanted[mid][2].get('twin') and r.get('twin') in TWIN_RELS:
+                reviews[mid]['twin'] = r['twin']  # how its rules compare with its Polymarket twin's
             got += 1
     cutoff = str(TODAY - datetime.timedelta(days=REVIEW_KEEP_DAYS))
     for mid in [k for k, r in reviews.items() if r['day'] < cutoff]:
@@ -899,6 +1027,8 @@ def cmd_ingest(a):
     book = {p['id']: p for p in st['picks']}
     flags, diffs = [], []
     for mid, r in today.items():
+        if mid.startswith('K:'):  # Kalshi markets: kalshi_lists() below, at Kalshi's prices with its fee
+            continue
         _, e, m = wanted[mid]
         p = book.get(mid)
         if p:
@@ -916,9 +1046,15 @@ def cmd_ingest(a):
             if x['ann'] >= MAIN_ANN and x['tot'] >= MIN_EDGE:
                 flags.append((x, side, ask, fair, e, m, r))
     flags.sort(key=lambda f: -f[0]['ann'])
+    kq = {mid: dict(yes_bid=m['yes_bid'], yes_ask=m['yes_ask'], no_ask=m.get('no_ask'))
+          for mid, (_, _, m) in wanted.items() if mid.startswith('K:')}
+    pq = {mid: dict(bid=m['yes_bid'], ask=m['yes_ask']) for mid, (_, _, m) in wanted.items() if not mid.startswith('K:')}
+    kl = kalshi_lists(st, kq, pq, since=str(TODAY))
     st['review'] = dict(day=str(TODAY), markets=len(today), of=len(wanted),
                         events=len({wanted[mid][1]['event'] for mid in today}),
-                        of_events=len({e['event'] for _, e, _ in wanted.values()}), flags=len(flags), diffs=len(diffs))
+                        of_events=len({e['event'] for _, e, _ in wanted.values()}), flags=len(flags), diffs=len(diffs),
+                        kalshi=sum(1 for mid in today if mid.startswith('K:')), kalshi_of=len(kq),
+                        kflags=len(kl['picks']), pairs=len(kl['pairs']))
     write(STATE, st)
 
     rv = st['review']
@@ -935,6 +1071,214 @@ def cmd_ingest(a):
               f"{f' --end {s}' if s else ''} | {m['question']} | {r['why']}")
     for p, ours, r in diffs:
         print(f"BOOK DIFF {p['id']} {p['name']}: book {p['side']} fair {p['fair']:.3f}, review {ours:.3f} | {r['why']}")
+    print(f"kalshi: {rv['kalshi']} of {rv['kalshi_of']} Kalshi markets reviewed today; {len(kl['picks'])} KFLAG, "
+          f"{len(kl['pairs'])} PAIR, {len(kl['cheaper'])} CHEAPER")
+    for x in kl['picks']:
+        print(f"KFLAG {x['ann'] * 100:+,.0f}%/yr {x['tot'] * 100:+.0f}% {x['side']} cost ~{x['cost']:.3f} (ask {x['ask']:.3g} "
+              f"+ fee) fair {x['fair']:.3f} ends {x['end']} | kpeek {x['id']} | {x['name']} | {x['why']}")
+    for x in kl['pairs']:
+        print(f"PAIR {x['ann'] * 100:+,.0f}%/yr {x['tot'] * 100:+.1f}% cost {x['cost']:.3f}: Kalshi {x['kside']} "
+              f"{x['kcost']:.3f} + Polymarket {x['pside']} {x['pcost']:.3f} ({x['rel']}) ends {x['end']} | kpeek {x['id']} | "
+              f"{x['name']} ~ {x['pq']}")
+    for x in kl['cheaper']:
+        print(f"CHEAPER {x['pick']} {x['pname']}: {x['side']} Polymarket ask {x['pask']:.3g}, Kalshi {x['kcost']:.3f} with "
+              f"its fee ({x['save'] * 100:.1f}¢ less) | kpeek {x['id']}")
+
+
+# ---------------------------------------------------------------- Kalshi
+
+TWIN_RELS = ('same', 'wider', 'narrower', 'different')  # a Kalshi market's rules against its Polymarket twin's
+REL_TEXT = {'same': 'same rules', 'wider': 'Kalshi YES covers more', 'narrower': 'Polymarket YES covers more'}
+
+
+def kalshi_costs(k, q):
+    """((YES cost, YES ask), (NO cost, NO ask)) of Kalshi market k at quotes q; a cost is the ask plus Kalshi's taker
+    fee, None where nobody sells."""
+    ya, na = q.get('yes_ask'), q.get('no_ask')
+    if na is None and q.get('yes_bid'):
+        na = 1 - q['yes_bid']
+    c = lambda x: kalshi.cost(x, k.get('mult', 1)) if x is not None and 0 < x < 1 else None
+    return (c(ya), ya), (c(na), na)
+
+
+def kalshi_lists(st, kq, pq, since=None):
+    """The Kalshi part's three lists at quotes kq (Kalshi, by "K:" id) and pq (Polymarket YES bid and ask, by market id).
+
+      picks:   Kalshi markets where a side clears the main list's bars (MAIN_ANN a year, MIN_EDGE to resolution) after
+               Kalshi's fee, at the review's fair value: one the routine confirmed (kset), or the reviewer's own where it
+               is REVIEW_GAP or more off Kalshi's mid, like a FLAG line.
+      pairs:   a Kalshi leg and the opposite Polymarket leg of its twin that together pay at least $1 whatever happens,
+               both with their taker fees, for at least PAIR_MIN under $1 and PAIR_ANN a year. Twins with the same rules
+               pair either way round; where one market's YES covers more cases ("wider"), its YES pairs with the other's
+               NO, which pays $2 when only the wider YES comes true.
+      cheaper: book picks whose twin with the same rules costs CHEAPER_MIN or more less on Kalshi, fees included.
+
+    Reviews from before `since` (YYYY-MM-DD) are left out, and so are those the routine rejected (kset --reject)."""
+    K = st.get('kalshi') or {}
+    ks, tws, reviews = K.get('markets') or {}, K.get('twins') or {}, st.get('reviews') or {}
+    fresh = lambda r: r and not r.get('rejected') and (not since or r['day'] >= since)
+    picks, pairs, cheaper, by_twin = [], [], [], {}
+    for kid, k in ks.items():
+        r, q = reviews.get(kid), kq.get(kid)
+        if not fresh(r) or not q:
+            continue
+        (yc, ya), (nc, na) = kalshi_costs(k, q)
+        end = r.get('settles') or k['end']
+        mid = (q['yes_bid'] + q['yes_ask']) / 2 if q.get('yes_bid') and q.get('yes_ask') else None
+        rel, pid = r.get('twin'), k.get('twin')
+        p, t = pq.get(pid), tws.get(pid)
+        if rel == 'same' and t:
+            by_twin[pid] = kid
+        if r.get('checked') or (mid is not None and abs(r['fair'] - mid) >= REVIEW_GAP):
+            for side, fair, c, ask in (('YES', r['fair'], yc, ya), ('NO', 1 - r['fair'], nc, na)):
+                if c is None:
+                    continue
+                x = econ(dict(ask=c, fair=fair, end=end, hold=False))
+                if x['ann'] < MAIN_ANN or x['tot'] < MIN_EDGE:
+                    continue
+                poly = None  # the same side on Polymarket, where the twin has the same rules
+                if rel == 'same' and p and t:
+                    pa = p.get('ask') if side == 'YES' else (1 - p['bid'] if p.get('bid') else None)
+                    poly = poly_cost(pa, t.get('fee')) if pa else None
+                picks.append(dict(id=kid, name=k['name'], url=k['url'], side=side, ask=ask, cost=c, fair=fair, end=end,
+                                  tot=x['tot'], ann=x['ann'], checked=bool(r.get('checked')), why=r['why'], oi=k['oi'],
+                                  poly=poly, purl=t['url'] if rel == 'same' and t else None))
+        if rel in ('same', 'wider', 'narrower') and p and t:
+            legs = []
+            if rel in ('same', 'wider') and yc and p.get('bid'):
+                legs.append(('YES', yc, ya, 'NO', poly_cost(1 - p['bid'], t.get('fee')), 1 - p['bid']))
+            if rel in ('same', 'narrower') and nc and p.get('ask'):
+                legs.append(('NO', nc, na, 'YES', poly_cost(p['ask'], t.get('fee')), p['ask']))
+            for kside, kc, kask, pside, pc, pask in legs:
+                c = kc + pc
+                if c >= 1:
+                    continue
+                last = max(k['end'], t['end'])  # the money is back when the later leg pays
+                tot = 1 / c - 1
+                ann = per_year(tot, max((datetime.date.fromisoformat(last) - TODAY).days, 1))
+                if tot >= PAIR_MIN and ann >= PAIR_ANN:
+                    pairs.append(dict(id=kid, name=k['name'], url=k['url'], pid=pid, pq=t['q'], purl=t['url'], rel=rel,
+                                      kside=kside, kask=kask, kcost=kc, pside=pside, pask=pask, pcost=pc, cost=c, tot=tot,
+                                      ann=ann, end=last, checked=bool(r.get('checked'))))
+    for b in st['picks']:
+        kid = by_twin.get(b['id'])
+        if not kid or b.get('closed') or not b.get('ask') or b.get('fair') is None:
+            continue
+        (yc, ya), (nc, na) = kalshi_costs(ks[kid], kq[kid])
+        kc, ka = (yc, ya) if b['side'] == 'YES' else (nc, na)
+        pc = poly_cost(b['ask'], b.get('fee'))
+        if kc and kc <= pc - CHEAPER_MIN:
+            x = econ(dict(ask=kc, fair=b['fair'], end=b['end'], hold=False))
+            cheaper.append(dict(id=kid, kname=ks[kid]['name'], url=ks[kid]['url'], pick=b['id'], pname=b['name'],
+                                purl=b['url'], side=b['side'], pask=b['ask'], pcost=pc, kask=ka, kcost=kc, save=pc - kc,
+                                tot=x['tot'], ann=x['ann'], hold=bool(b.get('hold')), held=bool(b.get('held'))))
+    picks.sort(key=lambda x: -x['ann'])
+    pairs.sort(key=lambda x: -x['ann'])
+    cheaper.sort(key=lambda x: -x['save'])
+    return dict(picks=picks, pairs=pairs, cheaper=cheaper)
+
+
+def kalshi_now(st):
+    """kalshi_lists() at live prices for build: Kalshi's quotes for every candidate with a recent review, Gamma's for
+    the Polymarket twins. Where a fetch fails, the scan's prices stand in. None if the last scan found no Kalshi data or
+    none of it has a review from the last two days."""
+    K = st.get('kalshi') or {}
+    if not K.get('markets'):
+        return None
+    reviews = st.get('reviews') or {}
+    since = str(TODAY - datetime.timedelta(days=2))
+    want = [kid for kid in K['markets'] if (reviews.get(kid) or {}).get('day', '') >= since]
+    if not want:  # Kalshi swept but not reviewed yet (its first morning): no part until there are fair values
+        return None
+    kq = {kid: K['markets'][kid] for kid in want}
+    at = K.get('at')
+    try:
+        live = kalshi.quotes([K['markets'][kid]['ticker'] for kid in want])
+        kq = {kid: live[K['markets'][kid]['ticker']] for kid in want
+              if live.get(K['markets'][kid]['ticker'], {}).get('status') in ('active', 'open')}
+        at = at_now()
+    except Exception as e:
+        print(f"kalshi: live prices unavailable ({e!r}); the Kalshi part uses the scan's from {K.get('at')}")
+    pq = {pid: dict(bid=t['bid'], ask=t['ask']) for pid, t in (K.get('twins') or {}).items()}
+    ids = sorted({K['markets'][kid]['twin'] for kid in want if K['markets'][kid].get('twin')})
+    try:
+        for i in range(0, len(ids), 40):
+            for m in get(f"{GAMMA}/markets?limit=50&" + '&'.join(f'id={x}' for x in ids[i:i + 40])) or []:
+                if m.get('bestBid') is not None and m.get('bestAsk') is not None and not m.get('closed'):
+                    pq[m['id']] = dict(bid=float(m['bestBid']), ask=float(m['bestAsk']))
+    except Exception as e:
+        print(f"kalshi: Polymarket twin prices unavailable ({e!r}); using the scan's")
+    out = kalshi_lists(st, kq, pq, since=since)
+    out.update(at=at, swept=K.get('swept') or {}, reviewed=len(kq))
+    return out
+
+
+def kid_of(ref):
+    ref = ref.strip()
+    return ref if ref.startswith('K:') else 'K:' + ref.upper()
+
+
+def cmd_kpeek(a):
+    """One Kalshi market: its rules and live prices (with the fee), its Polymarket twin's rules and prices, and its review."""
+    st = load()
+    kid = kid_of(a.ticker)
+    m = kalshi.get(f"{kalshi.API}/markets/{urllib.parse.quote(kid[2:])}")['market']
+    k = ((st.get('kalshi') or {}).get('markets') or {}).get(kid) or {}
+    (yc, ya), (nc, na) = kalshi_costs(k or {'mult': 1}, dict(yes_bid=kalshi._f(m.get('yes_bid_dollars')),
+                                                            yes_ask=kalshi._f(m.get('yes_ask_dollars')),
+                                                            no_ask=kalshi._f(m.get('no_ask_dollars'))))
+    print(f"{kid}  {m.get('title')}  [{m.get('yes_sub_title') or ''}]  status {m.get('status')}, closes {m.get('close_time')}")
+    print(f"  YES bid {m.get('yes_bid_dollars')} ask {ya} -> costs {yc and round(yc, 4)} with the fee; "
+          f"NO bid {m.get('no_bid_dollars')} ask {na} -> costs {nc and round(nc, 4)}; "
+          f"open interest {m.get('open_interest_fp')}, volume {m.get('volume_fp')}; fee x{k.get('mult', 1)}")
+    print(f"  {k.get('url') or kalshi.url(m.get('event_ticker', '').split('-')[0], m.get('event_ticker'))}")
+    print(f"RULES: {m.get('rules_primary')}\n{m.get('rules_secondary') or ''}")
+    r = (st.get('reviews') or {}).get(kid)
+    if r:
+        print(f"REVIEW {r['day']}: fair YES {r['fair']}{' (checked)' if r.get('checked') else ''}"
+              f"{', twin ' + r['twin'] if r.get('twin') else ''}{', REJECTED: ' + r['rejected'] if r.get('rejected') else ''}"
+              f" | {r['why']}")
+    if k.get('twin'):
+        p = get(f"{GAMMA}/markets/{k['twin']}")
+        t = st['kalshi']['twins'].get(k['twin']) or {}
+        print(f"TWIN (match score {k.get('score')}): Polymarket {k['twin']} {p.get('question')} | YES bid {p.get('bestBid')} "
+              f"ask {p.get('bestAsk')}, ends {(p.get('endDate') or '')[:10]}, fee rate {t.get('fee')} | {t.get('url')}")
+        print(f"TWIN RULES: {(p.get('description') or '').strip()[:2500]}")
+
+
+def cmd_kset(a):
+    """Confirm a Kalshi market's review after checking it (fair value of YES, how its rules compare with its twin's), or
+    set it aside for today with --reject. The next day's review replaces either."""
+    st = load()
+    kid = kid_of(a.ticker)
+    k = ((st.get('kalshi') or {}).get('markets') or {}).get(kid)
+    if not k:
+        sys.exit(f'{kid} is not among the Kalshi candidates of the last scan')
+    reviews = st.setdefault('reviews', {})
+    r = reviews.get(kid)
+    if a.reject:
+        if not r:
+            sys.exit(f'{kid} has no review to reject')
+        r.update(rejected=a.reject, day=str(TODAY))
+        r.pop('checked', None)
+    else:
+        if a.fair is None or not a.why:
+            sys.exit('kset needs --fair and --why (or --reject)')
+        r = dict(r or {}, fair=a.fair, why=a.why, day=str(TODAY), checked=True, event=k['event'])
+        r.pop('rejected', None)
+        if a.twin:
+            if not k.get('twin'):
+                sys.exit(f'{kid} has no Polymarket twin')
+            r['twin'] = a.twin
+        reviews[kid] = r
+    write(STATE, st)
+    (yc, _), (nc, _) = kalshi_costs(k, k)
+    for side, fair, c in (('YES', r['fair'], yc), ('NO', 1 - r['fair'], nc)):
+        x = econ(dict(ask=c, fair=fair, end=r.get('settles') or k['end'], hold=False)) if c else None
+        if x and not a.reject:
+            print(f"  {side}: costs {c:.3f} at the scan's prices, fair {fair:.3f}: {x['tot'] * 100:+.1f}% "
+                  f"({x['ann'] * 100:+,.0f}% a year)")
+    print(f"{kid} {'rejected: ' + a.reject if a.reject else 'checked'}{', twin ' + r['twin'] if r.get('twin') else ''}")
 
 
 # ---------------------------------------------------------------- smart money
@@ -1102,10 +1446,15 @@ def cmd_build(a):
     held = [(p, hold_econ(p)) for p in keep if p.get('held')]
     held.sort(key=lambda r: (r[1] is None, r[1]['ann'] if r[1] else 0))  # bid above fair first, unvalued last
     st['built'] = NOW.isoformat(timespec='seconds')
+    try:  # the Kalshi part; never a reason for the build to fail
+        kl = kalshi_now(st)
+    except Exception as e:
+        print(f'warning: Kalshi part left out: {e!r}')
+        kl = None
 
     os.makedirs(SITE, exist_ok=True)
     os.makedirs(WORK, exist_ok=True)
-    section, nav = render(st, main, extra, noask, held)
+    section, nav = render(st, main, extra, noask, held, kl)
     with open(SECTION, 'w') as fh:
         fh.write(section)
     write(NAV, nav)
@@ -1129,7 +1478,15 @@ def cmd_build(a):
                    held=len(held), held_above=[p['name'] for p, h in held if h and h['tot'] < 0],
                    held_unvalued=sum(1 for p, _ in held if p.get('fair') is None),
                    held_edge=round(sum(h['edge'] for _, h in held if h), 2),
-                   review=st['review'] if (st.get('review') or {}).get('day') == str(TODAY) else None)
+                   review=st['review'] if (st.get('review') or {}).get('day') == str(TODAY) else None,
+                   kalshi=dict(at=kl['at'], swept=kl['swept'], reviewed=kl['reviewed'], picks=len(kl['picks']),
+                               pairs=len(kl['pairs']), cheaper=len(kl['cheaper']),
+                               top=[dict(name=x['name'], side=x['side'], cost=round(x['cost'], 4), fair=x['fair'],
+                                         ann=round(x['ann'], 4), checked=x['checked'], url=x['url'])
+                                    for x in kl['picks'][:5]],
+                               top_pairs=[dict(name=x['name'], pq=x['pq'], cost=round(x['cost'], 4), tot=round(x['tot'], 4),
+                                               ann=round(x['ann'], 4), rel=x['rel'], checked=x['checked'])
+                                          for x in kl['pairs'][:5]]) if kl else None)
     write(os.path.join(SITE, 'summary.json'), summary)
     print(f"built the hunt section (hunt/work/section.html): {len(main)} main, {len(extra)} appendix, {len(noask)} without an ask, "
           f"{summary['hold']} earn the APR reward, {summary['new']} new today, {len(st['dropped'])} dropped, "
@@ -1150,6 +1507,17 @@ def cmd_build(a):
         print(f"  dropped: {p['name']}: {p['reason']}")
     for p in st['resolved']:
         print(f"  resolved: {resolved_line(p)}")
+    if kl:
+        print(f"kalshi: {len(kl['picks'])} picks, {len(kl['pairs'])} cross-venue pairs, {len(kl['cheaper'])} book picks cheaper "
+              f"on Kalshi, at prices from {kl['at']} ({kl['reviewed']} reviewed Kalshi markets)")
+        for x in kl['pairs'][:5]:
+            print(f"  pair {x['ann'] * 100:+7,.0f}%/yr {x['tot'] * 100:+.1f}% cost {x['cost']:.3f}: Kalshi {x['kside']} + "
+                  f"Polymarket {x['pside']} ({x['rel']}{', checked' if x['checked'] else ''})  {x['name']}")
+        for x in kl['picks'][:5]:
+            print(f"  kalshi {x['ann'] * 100:+7,.0f}%/yr {x['tot'] * 100:+4.0f}% {x['side']} {x['cost']:.3f} fair {x['fair']:.2f} "
+                  f"{'checked ' if x['checked'] else ''} {x['name']}")
+    else:
+        print('kalshi: no Kalshi data (scan found none, or the part failed)')
 
 
 # ---------------------------------------------------------------- page
@@ -1512,9 +1880,98 @@ def held_table_html(held):
     return f'<div class="table-box"><table class="hunt" id="hunt-held-table">{head}<tbody>{body}</tbody></table></div>'
 
 
-def render(st, main, extra, noask, held):
+def kalshi_html(kl):
+    """The hunt's Kalshi part (kalshi_now()): cross-venue pairs, Kalshi picks, and book picks cheaper on Kalshi.
+    Its rows carry no data-token, so the page's Refresh (Polymarket's books) leaves them as built."""
+    if not kl:
+        return ''
+    sw = kl['swept']
+    day = lambda d: f'{datetime.date.fromisoformat(d):%-d %b %Y}'
+    tone = lambda a: 'r3' if a >= 1 else 'r2' if a >= 0.5 else 'r1' if a >= MAIN_ANN else 'r0'
+    def badge(x):
+        if x['checked']:
+            return '<span class="tag" title="The routine re-read the rules and the news and confirmed this fair value">Checked</span>'
+        return ('<span class="tag" title="A research subagent\'s fair value, not yet checked by the routine: read the rules '
+                'before acting on it">Reviewer only</span>')
+    pair_rows = []
+    for i, x in enumerate(kl['pairs'], 1):
+        wide = 'Kalshi' if x['rel'] == 'wider' else 'Polymarket'
+        how = ('Same question on both: one leg pays $1, whichever way it goes.' if x['rel'] == 'same' else
+               f'Pays $1, or $2 if only {wide}\'s wider YES comes true.')
+        pair_rows.append(f'''<tr>
+  <td class="n">{i}</td>
+  <td class="mkt"><a href="{esc(x['url'])}">{esc(x['name'])}</a> <span class="faint">on Kalshi</span><br>
+    <a href="{esc(x['purl'])}">{esc(x['pq'])}</a> <span class="faint">on Polymarket</span>
+    <div class="meta"><span class="tag">{esc(REL_TEXT[x['rel']])}</span>{badge(x)}</div><p class="why">{esc(how)}</p></td>
+  <td class="num" data-k="Kalshi leg"><b>{x['kside']} {px(x['kask'])}</b><div class="sub">{x['kcost']:.3f} with fee</div></td>
+  <td class="num" data-k="Polymarket leg"><b>{x['pside']} {px(x['pask'])}</b><div class="sub">{x['pcost']:.3f} with fee</div></td>
+  <td class="num" data-k="Cost"><b>{x['cost']:.3f}</b></td>
+  <td class="num" data-k="Return"><b>{x['tot'] * 100:+.1f}%</b></td>
+  <td class="num ret {tone(x['ann'])}" data-k="Per yr"><b>{pct(x['ann'])}</b></td>
+  <td class="num" data-k="Ends">{day(x['end'])}</td>
+</tr>''')
+    pairs = (f'<div class="table-box"><table class="hunt"><thead><tr><th class="n">#</th><th class="mkt">Pair</th>'
+             '<th title="Kalshi side and ask; under it the cost with Kalshi\'s taker fee">Kalshi leg</th>'
+             '<th title="Polymarket side and ask (a NO costs 1 − the YES bid); under it the cost with its taker fee">Polymarket leg</th>'
+             '<th title="Both legs with their fees; the pair pays at least $1">Cost</th>'
+             '<th title="1 ÷ cost − 1">Return</th><th title="Return ÷ years to the later end">Per yr ▾</th><th>Ends</th></tr></thead>'
+             f'<tbody>{"".join(pair_rows)}</tbody></table></div>' if pair_rows else
+             f'<p class="note">No pair makes {PAIR_MIN * 100:.0f}% or more after both fees today.</p>')
+    pick_rows = []
+    for i, x in enumerate(kl['picks'][:KALSHI_SHOW], 1):
+        twin = (f'<a class="tag" href="{esc(x["purl"])}" title="The same question on Polymarket">Polymarket twin</a>'
+                if x['purl'] else '')
+        if x['poly'] is not None:
+            poly = (f'<b>{x["poly"]:.3f}</b><div class="sub {"down" if x["poly"] < x["cost"] - 0.005 else ""}">'
+                    f'{"cheaper there" if x["poly"] < x["cost"] - 0.005 else "not cheaper"}</div>')
+        else:
+            poly = '<span class="faint">–</span>'
+        pick_rows.append(f'''<tr>
+  <td class="n">{i}</td>
+  <td class="mkt"><a href="{esc(x['url'])}">{esc(x['name'])}</a><div class="meta"><span class="side {x['side'].lower()}">{x['side']}</span>{badge(x)}{twin}</div><p class="why">{esc(x['why'])}</p></td>
+  <td class="num" data-k="Cost"><b>{x['cost']:.3f}</b><div class="sub">ask {px(x['ask'])} + fee</div></td>
+  <td class="num" data-k="Fair"><b>{fv(x['fair'])}</b></td>
+  <td class="num" data-k="Return"><b>{pct(x['tot'])}</b></td>
+  <td class="num ret {tone(x['ann'])}" data-k="Per yr"><b>{pct(x['ann'])}</b></td>
+  <td class="num" data-k="Polymarket">{poly}</td>
+  <td class="num" data-k="Open int.">{x['oi']:,}</td>
+  <td class="num" data-k="Ends">{day(x['end'])}</td>
+</tr>''')
+    more = len(kl['picks']) - len(pick_rows)
+    picks = (f'<div class="table-box"><table class="hunt"><thead><tr><th class="n">#</th><th class="mkt">Kalshi market</th>'
+             '<th title="Kalshi\'s ask for our side plus its taker fee, per contract">Cost</th><th>Fair</th>'
+             '<th title="Fair ÷ cost − 1, held to resolution">Return</th><th title="Return ÷ years to resolution">Per yr ▾</th>'
+             '<th title="The same side on Polymarket with its fee, where the twin has the same rules">Polymarket</th>'
+             '<th title="Contracts open on Kalshi">Open int.</th><th>Ends</th></tr></thead>'
+             f'<tbody>{"".join(pick_rows)}</tbody></table></div>'
+             + (f'<p class="note">{more} more below these {len(pick_rows)}.</p>' if more > 0 else '') if pick_rows else
+             f'<p class="note">No Kalshi market clears {MAIN_ANN * 100:.0f}% a year after the fee today.</p>')
+    cheaper = ''
+    if kl['cheaper']:
+        cheaper = ('<h4>Same bet, cheaper on Kalshi</h4><ul class="plain">' + ''.join(
+            f'<li><a href="{esc(x["purl"])}">{esc(x["pname"])}</a> <span class="faint">{x["side"]}'
+            f'{", held" if x["held"] else ""}</span><div class="li-body">Polymarket {x["pcost"]:.3f} (ask {px(x["pask"])}), '
+            f'<a href="{esc(x["url"])}">Kalshi</a> {x["kcost"]:.3f} (ask {px(x["kask"])}) with the fees: '
+            f'{x["save"] * 100:.1f}¢ a share less, {pct(x["ann"])} a year there at the book\'s fair value'
+            f'{"; Kalshi pays no 3.25% APR reward" if x["hold"] else ""}.</div></li>' for x in kl['cheaper']) + '</ul>')
+    n = lambda k, word: f'{k} {word}{"s" if k != 1 else ""}'
+    return (f'<section id="hunt-kalshi" class="kalshi"><h3>Kalshi: {n(len(kl["picks"]), "pick")}, '
+            f'{n(len(kl["pairs"]), "cross-venue pair")}</h3><p class="note">Kalshi is a US exchange regulated by the CFTC, with its own markets and order books. '
+            'The wallet is on Polymarket, so nothing here is held, and Kalshi publishes no holders for a smart-money check. '
+            f'Today\'s sweep kept {sw.get("candidates", 0):,} Kalshi markets (from {sw.get("events", 0):,} open events); '
+            f'{sw.get("twins", 0)} have a Polymarket twin asking the same thing. The daily review prices them and compares '
+            'each twin\'s rules. <b>Cost</b> includes Kalshi\'s taker fee (7% × price × (1 − price) a contract) and, on a '
+            'pair\'s Polymarket leg, that market\'s own fee. A <b>pair</b> buys a side on each venue so that together they '
+            'pay at least $1 whatever happens, as long as both rule texts resolve as read. <b>Reviewer only</b>: a research '
+            'subagent\'s value the routine hasn\'t checked yet. '
+            f'Prices at {esc(str(kl["at"]).replace("T", " "))}; Refresh doesn\'t update this part.</p>'
+            f'<h4>Cross-venue pairs</h4>{pairs}<h4>Kalshi picks (at least {MAIN_ANN * 100:.0f}% a year after the fee)</h4>'
+            f'{picks}{cheaper}</section>')
+
+
+def render(st, main, extra, noask, held, kl=None):
     """The brief's Mispricing hunt section (markup, styles and scripts, all scoped to #hunt) and its part of the page's top
-    menu (tabs and the Refresh button). refresh.py puts both on the page."""
+    menu (tabs and the Refresh button). refresh.py puts both on the page. kl is the Kalshi part (kalshi_now()) or None."""
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
     n_fast, n_slow = len(main), len(extra)  # by rate, for the summary stats
@@ -1539,6 +1996,8 @@ def render(st, main, extra, noask, held):
     if held:
         tabs.append(('Hold vs sell', 'hunt-positions', len(held)))
     tabs.append(('Picks', 'hunt-main', len(main)))
+    if kl:
+        tabs.append(('Kalshi', 'hunt-kalshi', len(kl['picks']) + len(kl['pairs'])))
     if noask:
         tabs.append(('No sellers', 'hunt-noask', len(noask)))
     button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-sell-depth="{SELL_DEPTH}" data-min-days="{ANN_MIN_DAYS}" '
@@ -1596,6 +2055,7 @@ def render(st, main, extra, noask, held):
     rv = st.get('review') or {}
     reviewed = (f"<br>{rv['markets']:,} of {rv['of']:,} candidate markets researched today" if rv.get('day') == str(TODAY)
                 else '')
+    kal_swept = f", plus {kl['swept'].get('candidates', 0):,} Kalshi markets" if kl else ''
     return f'''<style>
 /* The brief's Mispricing hunt section. Every rule is nested under #hunt so none reaches the rest of the brief. */
 #hunt {{
@@ -1683,6 +2143,8 @@ def render(st, main, extra, noask, held):
   .sub {{ font-size: 12px; color: var(--muted); margin-top: 2px; font-family: inherit; white-space: inherit; font-variant-numeric: inherit; }}
   .sub.up {{ color: var(--up); }} .sub.down {{ color: var(--down); }} .sub.gold {{ color: var(--gold); }}
   .note {{ color: var(--muted); font-size: 13.5px; margin: 0 0 8px; max-width: 90ch; }}
+  .kalshi h4 {{ font-family: var(--display); font-size: 15px; font-weight: 600; margin: 18px 0 8px; }}
+  .kalshi a.tag {{ font-weight: 600; }}
   ul.plain {{ list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }}
   ul.plain li {{ padding-top: 10px; border-top: 1px solid var(--rule); }}
   ul.plain a {{ font-weight: 600; }}
@@ -1821,7 +2283,7 @@ def render(st, main, extra, noask, held):
       geopolitics, ranked by annualized return: a small edge that pays out in weeks beats a big one that takes years.
       Return is fair ÷ ask − 1 held to resolution, plus the holding reward where it applies. Not financial advice.</p>
     </div>
-    <div class="hunt-stamp"><span id="hunt-asks-at">Prices at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{reviewed}<br>{len(st['picks'])} picks in the book</div>
+    <div class="hunt-stamp"><span id="hunt-asks-at">Prices at {NOW:%-d %b %Y, %H:%M}</span><br>{swept.get('events', 0):,} events swept{kal_swept}{reviewed}<br>{len(st['picks'])} picks in the book</div>
   </div>
   <div class="summary" role="group" aria-label="Hunt summary">
     <div class="stat"><span class="k">≥ {MAIN_ANN * 100:.0f}% a year</span><span class="v"><a href="#hunt-main">{n_fast}</a></span><span class="s"><a href="#hunt-main">picks</a></span></div>
@@ -1835,6 +2297,7 @@ def render(st, main, extra, noask, held):
   {held_html}
   <section id="hunt-main"><h3>{main_h2}</h3>{main_html}</section>
   {extra_html}
+  {kalshi_html(kl)}
   {noask_html}
   {dropped}
   <footer>
@@ -1886,7 +2349,7 @@ REDIRECT = r'''<!doctype html>
 <title>Mispricing hunt</title>
 <meta http-equiv="refresh" content="0; url=/#hunt">
 <script>
-const h = location.hash.slice(1), parts = ['changes', 'resolved', 'positions', 'main', 'slower', 'noask', 'dropped'];
+const h = location.hash.slice(1), parts = ['changes', 'resolved', 'positions', 'main', 'slower', 'kalshi', 'noask', 'dropped'];
 location.replace('/#' + (parts.includes(h) ? 'hunt-' + h : /^m\d+$/.test(h) ? h : 'hunt'));
 </script></head>
 <body><p>The mispricing hunt is now part of the <a href="/#hunt">morning brief</a>.</p></body></html>
@@ -2306,6 +2769,9 @@ def main():
     s = sub.add_parser('note'); s.add_argument('text'); s.set_defaults(f=cmd_note)
     sub.add_parser('ingest').set_defaults(f=cmd_ingest)
     sub.add_parser('smart').set_defaults(f=cmd_smart)
+    s = sub.add_parser('kpeek'); s.add_argument('ticker'); s.set_defaults(f=cmd_kpeek)
+    s = sub.add_parser('kset'); s.add_argument('ticker'); s.add_argument('--fair', type=float); s.add_argument('--why')
+    s.add_argument('--twin', choices=TWIN_RELS); s.add_argument('--reject'); s.set_defaults(f=cmd_kset)
     sub.add_parser('build').set_defaults(f=cmd_build)
     a = ap.parse_args()
     for k in ('fair',):
