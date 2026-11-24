@@ -405,6 +405,12 @@ def cmd_pull(a):
         wallets = None
     if not wallets or len(wallets) < 100:
         wallets = read(SEED_WALLETS)
+    # First run today: the last build's prices and fair values become the "previous" column ("was ..."). Before the
+    # updates and deep dives below, so a fair value revised overnight shows what the brief said yesterday.
+    if st.get('day') != str(TODAY):
+        for p in st['picks']:
+            p['prev_ask'], p['prev_bid'], p['prev_bids'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('bids'), p.get('fair')
+        st.update(prev_day=st.get('day'), day=str(TODAY), notes=[], dropped=[], resolved=[])
     if os.path.exists(UPDATES):  # each applies once: when it is newer than the pick's last review
         for u in read(UPDATES):
             for p in st['picks']:
@@ -431,10 +437,6 @@ def cmd_pull(a):
     except Exception as err:
         if getattr(err, 'code', None) != 404:  # 404: no deep dives published yet
             print(f'warning: deep dives not applied: {err!r}')
-    if st.get('day') != str(TODAY):  # first run today: last run's prices become the "previous" column
-        for p in st['picks']:
-            p['prev_ask'], p['prev_bid'], p['prev_bids'], p['prev_fair'] = p.get('ask'), p.get('bid'), p.get('bids'), p.get('fair')
-        st.update(prev_day=st.get('day'), day=str(TODAY), notes=[], dropped=[], resolved=[])
     write(STATE, st)
     write(WALLETS, wallets, indent=None)
     print(f"pulled the book from the {src}: {len(st['picks'])} picks, built {st.get('built', '?')}, "
@@ -1539,6 +1541,14 @@ def fv(x):
     return f'{x:.3f}' if x >= 0.95 or x <= 0.05 else f'{x:.2f}'
 
 
+def fair_was(p):
+    """Under a pick's fair value: what it was in the last day's build, when the number shown has changed since."""
+    was = p.get('prev_fair')
+    if was is None or p.get('fair') is None or fv(was) == fv(p['fair']):
+        return ''
+    return f'<div class="sub">was {fv(was)}</div>'
+
+
 def usd(x, sign=True):
     s = f'${abs(x):,.2f}'
     return (('+' if x >= 0 else '−') + s) if sign else s
@@ -1766,9 +1776,7 @@ def row_html(i, p, e):
         move = '<div class="sub">unchanged</div>'
     else:  # cheaper entry is good news for us
         move = f'<div class="sub {"up" if p["ask"] < prev else "down"}">was {px(prev)}</div>'
-    fair_ch = ''
-    if p.get('prev_fair') is not None and abs(p['fair'] - p['prev_fair']) >= 0.005:
-        fair_ch = f'<div class="sub">was {fv(p["prev_fair"])}</div>'
+    fair_ch = fair_was(p)
     tone = 'r3' if e['ann'] >= 1 else 'r2' if e['ann'] >= 0.5 else 'r1' if e['ann'] >= MAIN_ANN else 'r0'
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
     smart = smart_cell(p)
@@ -1819,9 +1827,7 @@ def held_row_html(i, p, h):
     if p.get('fair') is None:
         fair = '<span class="faint">–</span><div class="sub">not valued yet</div>'
     else:
-        fair = f'<b>{fv(p["fair"])}</b>'
-        if p.get('prev_fair') is not None and abs(p['fair'] - p['prev_fair']) >= 0.005:
-            fair += f'<div class="sub">was {fv(p["prev_fair"])}</div>'
+        fair = f'<b>{fv(p["fair"])}</b>{fair_was(p)}'
     if h:
         tone = 'down' if h['tot'] < 0 else 'flat' if h['tot'] < 0.02 else 'up'
         bonus = f'<div class="sub gold">incl. +{h["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
