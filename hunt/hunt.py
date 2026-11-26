@@ -40,7 +40,10 @@ either side clears the main list's bars at today's prices. The routine verifies 
 
 Each pick keeps its history (p['hist'], see log_fair): when it entered the book, at what ask and fair value, and every
 change of fair value since. When a pick resolves, `build` fetches its trail (the wallet's trades and redemptions, and
-the price of our side) and the Resolved section tells the bet's story from entry to payout, one card per bet.
+the price of our side) and the Resolved section tells the bet's story from entry to payout, one card per bet. Every
+resolved bet stays in st['graves'] (seeded from hunt/graves.json, the bets of 31 Oct-25 Nov 2026), listed at the end of
+the hunt as All resolved bets, newest first, each line opening into its card with every buy and sale. A bet the wallet
+never bought is marked Paper, its return taken at the ask when it was picked.
 
 Kalshi (hunt/kalshi.py, since 22 Nov 2026): `scan` also sweeps Kalshi's open markets. Its candidates (id "K:<ticker>") go
 into the same review batches, each next to the Polymarket market that asks about the same thing (its twin) where
@@ -69,6 +72,7 @@ BATCHES = os.path.join(WORK, 'batches')  # full review: scan writes one file per
 REVIEWS = os.path.join(WORK, 'reviews')  # ... each subagent writes its fair values here, and ingest reads them
 SEED = os.path.join(HERE, 'seed.json')
 SEED_WALLETS = os.path.join(HERE, 'seed-wallets.json')
+GRAVES_SEED = os.path.join(HERE, 'graves.json')  # the bets resolved before the book kept them all (31 Oct-25 Nov 2026)
 UPDATES = os.path.join(HERE, 'updates.json')  # fair values revised outside the routine (deep dives), applied once by pull; an entry with "add" queues a new pick
 SITE = os.path.join(ROOT, 'site', 'hunt')
 SECTION = os.path.join(WORK, 'section.html')  # the brief's Mispricing hunt section; refresh.py puts it on the page ...
@@ -1407,6 +1411,23 @@ def money(p):
                 redeemed=any(x['kind'] == 'REDEEM' for x in tr))
 
 
+def graves(st):
+    """Every bet in the book that has resolved, newest resolution first: the archive in st['graves'] (seeded once from
+    hunt/graves.json) plus today's st['resolved']. A trail is fetched for a bet without one, and again while a won bet
+    still has shares to redeem, so the redemption shows; the others keep theirs."""
+    seed = read(GRAVES_SEED) if 'graves' not in st and os.path.exists(GRAVES_SEED) else []
+    if seed:
+        print(f"seeded the resolved archive with {len(seed)} bets from hunt/graves.json")
+    out = {(g['id'], g['side']): g for g in (st.get('graves') or seed)}
+    out.update(((p['id'], p['side']), p) for p in st['resolved'])  # life() just ran on these
+    today = {id(p) for p in st['resolved']}
+    for g in out.values():
+        m = money(g) if g.get('life') else None
+        if id(g) not in today and (not g.get('life') or (m and m['pay'] > 0.005 and not m['redeemed'])):
+            life(g)
+    return sorted(out.values(), key=lambda g: g.get('resolved_at') or '', reverse=True)
+
+
 def first_add(p):
     """The history's last entry into the book (a pick can leave and come back), or None."""
     return next((x for x in reversed(p.get('hist') or []) if x.get('ev') == 'add'), None)
@@ -1440,6 +1461,7 @@ def cmd_build(a):
     st['picks'] = keep
     for p in st['resolved']:
         life(p)
+    st['graves'] = graves(st)
     rows = [(p, econ(p)) for p in keep if econ(p) and not weak(econ(p))]
     rows.sort(key=lambda r: -r[1]['ann'])
     main = [r for r in rows if r[1]['ann'] >= MAIN_ANN]
@@ -1674,50 +1696,108 @@ def spark_html(p):
             + ('<span class="k-sell"></span>sale' if any(d[0] == 'SELL' for d in dots) else '') + '</p>')
 
 
-def grave_html(p):
-    """One resolved pick as a card: the result, the money, the price path and the story from entering the book."""
+def paper_return(p):
+    """A bet the wallet never bought: what buying our side at the ask when it was picked would have returned, or None."""
+    a = first_add(p)
+    return ((1.0 if p['won'] else 0.0) / a['ask'] - 1) if a and a.get('ask') else None
+
+
+def grave_parts(p):
+    """A resolved pick's card in parts: (money or None, the result pills, the P/L headline, the body). The body has the
+    numbers, a plain line on a paper bet (one the wallet never bought), the price chart and the story with every buy and
+    sale. A paper bet's headline is the return at the ask when it was picked, marked as paper."""
     m = money(p)
     won = p['won']
-    res = f'<b class="res {"up" if won else "down"}">{"Won" if won else "Lost"}</b>'
+    pills = (f'{side_pill(p)}<b class="res {"up" if won else "down"}">{"Won" if won else "Lost"}</b>'
+             + ('<span class="held">Held</span>' if m else '<span class="paper">Paper</span>'))
     fairs = [x['fair'] for x in p.get('hist') or [] if x.get('fair') is not None] or ([p['fair']] if p.get('fair') is not None else [])
     fair_cell = (f'{fv(fairs[0])} → {fv(fairs[-1])}' if len(fairs) > 1 and fairs[0] != fairs[-1]
                  else fv(fairs[-1]) if fairs else '–')
+    note = ''
     if m:
         head = (f'<div class="g-pl {"up" if m["pnl"] >= 0 else "down"}"><b>{usd(m["pnl"])}</b>'
                 f'<span>{m["ret"] * 100:+.1f}% in {max(round(m["days"]), 1)} day{"s" if round(m["days"]) != 1 else ""}</span></div>')
         nums = [('In', usd(m['cost'], False)), ('Back', usd(m['back'], False)), ('A year', pct(m['ann'])), ('Fair', fair_cell)]
     else:
-        a = first_add(p)
-        paper = ((1.0 if won else 0.0) / a['ask'] - 1) if a and a.get('ask') else None
-        head = (f'<div class="g-pl {"up" if (paper or 0) >= 0 else "down"}"><b>{pct(paper) if paper is not None else "–"}</b>'
-                f'<span>not held: at the {px(a["ask"])} ask</span></div>' if paper is not None else
-                '<div class="g-pl"><b>–</b><span>not held</span></div>')
-        nums = [('Ask then', px(a['ask']) if a and a.get('ask') else '–'), ('Paid', '$1' if won else '$0'),
+        a, paper = first_add(p), paper_return(p)
+        head = (f'<div class="g-pl paper"><b>{pct(paper)}</b><span>paper, at the {px(a["ask"])} ask</span></div>'
+                if paper is not None else '<div class="g-pl paper"><b>–</b><span>paper</span></div>')
+        nums = [('Ask then', px(a['ask']) if a and a.get('ask') else '–'), ('Paid out', '$1 a share' if won else '$0'),
                 ('In book', f"{max((ts(p['resolved_at']) - ts(a['at'])) // 86400, 0)} days" if a and p.get('resolved_at') else '–'),
                 ('Fair', fair_cell)]
+        note = ('<p class="g-paper">Paper bet: the wallet never bought or sold this market. '
+                + (f'{pct(paper)} is what buying {p["side"]} at the {px(a["ask"])} ask when it was picked would have made.'
+                   if paper is not None else 'There was no ask when it was picked.') + '</p>')
     rows = ''.join(f'<li><time>{esc(label)}</time><div>{esc(text)}{f"<p class=why>{esc(why)}</p>" if why else ""}</div></li>'
                    for _, label, text, why in life_rows(p, m))
+    body = (f'<dl class="g-nums">{"".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in nums)}</dl>'
+            f'{note}{spark_html(p)}<ol class="life">{rows}</ol>')
+    return m, pills, head, body
+
+
+def grave_html(p):
+    """One resolved pick as a card: the result, the money, the price path and the story from entering the book."""
+    _, pills, head, body = grave_parts(p)
     return (f'<article class="grave" id="r{esc(p["id"])}"><div class="g-head"><div><a href="{esc(p["url"])}">{esc(p["name"])}</a>'
-            f'<div class="meta">{side_pill(p)}{res}{"<span class=held>Held</span>" if m else ""}</div></div>{head}</div>'
-            f'<dl class="g-nums">{"".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in nums)}</dl>'
-            f'{spark_html(p)}<ol class="life">{rows}</ol></article>')
+            f'<div class="meta">{pills}</div></div>{head}</div>{body}</article>')
+
+
+def graves_tally(graves):
+    """Won and lost, and the money of the bets the wallet bought, as HTML."""
+    held = [m for m in map(money, graves) if m]
+    won = sum(1 for p in graves if p['won'])
+    tally = f"{won} won, {len(graves) - won} lost"
+    if held:
+        cost, pnl = sum(m['cost'] for m in held), sum(m['pnl'] for m in held)
+        tally += (f". The wallet bought {len(held)} of them: {usd(cost, False)} in, {usd(cost + pnl, False)} back, "
+                  f"<b class=\"{'up' if pnl >= 0 else 'down'}\">{usd(pnl)}</b> ({pnl / cost * 100:+.1f}%)")
+    if len(held) < len(graves):
+        tally += f"; {len(graves) - len(held)} paper"
+    return tally
+
+
+GRAVES_KEY = ('<b>In</b> is what the buys cost, fees included; <b>Back</b> is what sales fetched plus $1 a share held at '
+              'resolution when our side won; <b>A year</b> is the return over the days from the first buy to resolution, as a '
+              f'yearly rate (at least {ANN_MIN_DAYS} days). A <b>paper</b> bet is a pick the wallet never bought: its return is '
+              'what buying at the ask when it was picked would have made.')
 
 
 def graves_html(resolved):
-    ms = [money(p) for p in resolved]
-    won = sum(1 for p in resolved if p['won'])
-    held = [m for m in ms if m]
-    tally = f"{won} won, {len(resolved) - won} lost"
-    if held:
-        cost, pnl = sum(m['cost'] for m in held), sum(m['pnl'] for m in held)
-        tally += (f". The wallet held {len(held)} of them: {usd(cost, False)} in, {usd(cost + pnl, False)} back, "
-                  f"<b class=\"{'up' if pnl >= 0 else 'down'}\">{usd(pnl)}</b> ({pnl / cost * 100:+.1f}%)")
-    return (f'<section id="hunt-resolved"><h3>Resolved since the last run: {len(resolved)}</h3><p class="note">{tally}. '
+    return (f'<section id="hunt-resolved"><h3>Resolved since the last run: {len(resolved)}</h3><p class="note">{graves_tally(resolved)}. '
             'Each bet from the day it entered the book: the price and my fair value then, every change of fair value, '
-            'the wallet\'s buys and sales, resolution and redemption. <b>In</b> is what the buys cost, fees included; '
-            '<b>Back</b> is what sales fetched plus $1 a share held at resolution when our side won; <b>A year</b> is the '
-            f'return over the days from the first buy to resolution, as a yearly rate (at least {ANN_MIN_DAYS} days).</p>'
+            f'the wallet\'s buys and sales, resolution and redemption. {GRAVES_KEY} Every resolved bet is in '
+            '<a href="#hunt-history">All resolved bets</a> further down.</p>'
             f'<div class="graves">{"".join(grave_html(p) for p in resolved)}</div></section>')
+
+
+def history_html(graves, resolved):
+    """Every resolved bet, newest first, one line each (when it resolved, the bet, the result, money in and back, P/L)
+    that opens into its card's body: the numbers, the price chart and the story with each buy and sale."""
+    if not graves:
+        return ''
+    new = {(p['id'], p['side']) for p in resolved}
+    first = min((g.get('resolved_at') or '' for g in graves if g.get('resolved_at')), default='')
+    since = f" since {when(ts(first), False)}" if first else ''
+    lines = []
+    for g in graves:
+        m, pills, head, body = grave_parts(g)
+        at = when(ts(g['resolved_at']), False) if g.get('resolved_at') else '–'
+        if m:
+            cash = (f'<span class="h-in">{usd(m["cost"], False)} in, {usd(m["back"], False)} back</span>'
+                    f'<b class="h-pl {"up" if m["pnl"] >= 0 else "down"}">{usd(m["pnl"])}</b>')
+        else:
+            paper = paper_return(g)
+            cash = (f'<span class="h-in">not bought</span>'
+                    f'<b class="h-pl paper">{pct(paper) + " paper" if paper is not None else "–"}</b>')
+        fresh = '<span class="new">New</span>' if (g['id'], g['side']) in new else ''
+        lines.append(f'<details class="h-row" id="h{esc(g["id"])}"><summary><time>{at}</time>'
+                     f'<span class="h-name">{esc(g["name"])}</span><span class="meta">{pills}{fresh}</span>{cash}</summary>'
+                     f'<div class="h-body"><p class="h-link"><a href="{esc(g["url"])}">Open the market on Polymarket</a></p>'
+                     f'{body}</div></details>')
+    return (f'<section id="hunt-history"><h3>All resolved bets: {len(graves)}</h3><p class="note">Every bet in the book that has '
+            f'resolved{since}, newest first: {graves_tally(graves)}. Open one for the wallet\'s buys and sales (shares, price, '
+            f'dollars and time), the price chart and my fair value along the way. {GRAVES_KEY}</p>'
+            f'<div class="h-list">{"".join(lines)}</div></section>')
 
 
 def side_pill(p):
@@ -2006,6 +2086,8 @@ def render(st, main, extra, noask, held, kl=None):
         tabs.append(('Kalshi', 'hunt-kalshi', len(kl['picks']) + len(kl['pairs'])))
     if noask:
         tabs.append(('No sellers', 'hunt-noask', len(noask)))
+    if st.get('graves'):
+        tabs.append(('All resolved', 'hunt-history', len(st['graves'])))
     button = (f'<button type="button" class="refresh" id="hunt-refresh" data-apr="{HOLD_APR}" data-sell-depth="{SELL_DEPTH}" data-min-days="{ANN_MIN_DAYS}" '
         f'data-main="{MAIN_ANN}" data-min-edge="{MIN_EDGE}" data-built="{NOW:%H:%M}" data-built-ts="{int(NOW.timestamp())}" '
         f'data-wallet="{WALLET}" '
@@ -2117,13 +2199,14 @@ def render(st, main, extra, noask, held, kl=None):
   td.mkt {{ min-width: 260px; width: 42%; }}
   td.mkt a {{ font-weight: 600; line-height: 1.35; }}
   .meta {{ display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; }}
-  .side, .apr, .tag, .new, .held {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
+  .side, .apr, .tag, .new, .held, span.paper {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
   .side {{ font-family: var(--mono); border: 1px solid var(--rule); background: var(--surface-2); }}
   .side.no {{ color: var(--down); }} .side.yes {{ color: var(--up); }}
   .apr {{ color: var(--gold); background: var(--gold-bg); border: 1px solid var(--gold-line); }}
   .tag {{ color: var(--muted); border: 1px solid var(--rule); }}
   .new {{ color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }}
   .held {{ color: var(--surface); background: var(--ink); }}
+  span.paper {{ color: var(--muted); border: 1px dashed var(--faint); }}
   b.flat {{ color: var(--muted); }}
   td.rec, th.rec {{ text-align: left; white-space: nowrap; }}
   /* the positions' sortable heads (SORT_JS): the arrow shows the column and direction in use */
@@ -2201,6 +2284,25 @@ def render(st, main, extra, noask, held, kl=None):
   ol.life li {{ display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; }}
   ol.life time {{ font-family: var(--mono); font-size: 12px; color: var(--muted); padding-top: 2px; white-space: nowrap; }}
   ol.life .why {{ margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }}
+  .g-pl.paper b {{ color: var(--muted); }}
+  .g-paper {{ margin: 0; font-size: 13px; color: var(--muted); }}
+  /* All resolved bets: one line per bet, newest first, that opens into the card's body */
+  .h-list {{ border-top: 1px solid var(--rule); }}
+  .h-row {{ border-bottom: 1px solid var(--rule); scroll-margin-top: 64px; }}
+  .h-row summary {{ display: grid; grid-template-columns: 52px minmax(0, 1fr) auto 210px 96px; align-items: center; gap: 4px 14px;
+                    padding: 9px 4px; cursor: pointer; list-style: none; }}
+  .h-row summary::-webkit-details-marker {{ display: none; }}
+  .h-row summary:hover {{ background: var(--surface); }}
+  .h-row summary time {{ font: 12px var(--mono); color: var(--muted); }}
+  .h-row .h-name {{ font-weight: 600; min-width: 0; }}
+  .h-row .h-name::before {{ content: '▸'; display: inline-block; width: 1.1em; color: var(--faint); font-weight: 400; }}
+  .h-row[open] .h-name::before {{ content: '▾'; }}
+  .h-row .meta {{ margin: 0; flex-wrap: nowrap; }}
+  .h-row .h-in {{ font: 12.5px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; }}
+  .h-row .h-pl {{ font: 500 14px var(--mono); text-align: right; white-space: nowrap; }}
+  .h-row .h-pl.up {{ color: var(--up); }} .h-row .h-pl.down {{ color: var(--down); }} .h-row .h-pl.paper {{ color: var(--muted); font-weight: 400; }}
+  .h-body {{ display: grid; gap: 12px; padding: 4px 4px 18px 70px; max-width: 900px; }}
+  .h-link {{ margin: 0; font-size: 13px; }}
   footer {{ color: var(--muted); font-size: 12.5px; max-width: 110ch; display: grid; gap: 6px; }}
   footer p {{ margin: 0; }}
   @media (max-width: 720px) {{
@@ -2211,6 +2313,11 @@ def render(st, main, extra, noask, held, kl=None):
     .boxes {{ grid-template-columns: 1fr; }}
     .g-nums {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     ol.life li {{ grid-template-columns: 1fr; gap: 0; }}
+    .h-row summary {{ grid-template-columns: 52px minmax(0, 1fr) auto; }}
+    .h-row .meta {{ grid-column: 2; flex-wrap: wrap; }}
+    .h-row .h-in {{ grid-column: 2; text-align: left; }}
+    .h-row .h-pl {{ grid-column: 3; grid-row: 1; }}
+    .h-body {{ padding-left: 4px; }}
   }}
   @media (max-width: 1040px) {{
     table.hunt thead {{ display: none; }}
@@ -2306,6 +2413,7 @@ def render(st, main, extra, noask, held, kl=None):
   {kalshi_html(kl)}
   {noask_html}
   {dropped}
+  {history_html(st.get('graves') or [], st['resolved'])}
   <footer>
     <p><b>Ask</b> is the best offer for our side now, with the best bid (what selling would fetch) under it; "was" shows
     the last run's ask (green = cheaper today). <b>Rec</b> on a pick you don't hold says whether its edge (Return)
@@ -2701,7 +2809,7 @@ REFRESH_JS = r"""
 # The Resolved cards' price charts: a crosshair on the nearest point under the pointer, with its time, price and my fair
 # value then. The page is static; nothing is fetched.
 GRAVE_JS = r"""
-document.querySelectorAll('#hunt-resolved .spark').forEach(el => {
+document.querySelectorAll('#hunt-resolved .spark, #hunt-history .spark').forEach(el => {
   const pts = el.dataset.pts.split(' ').map(s => s.split(',').map(Number));
   const fair = el.dataset.fair.split(' ').filter(Boolean).map(s => { const [t, f] = s.split(','); return [+t, f === '' ? null : +f]; });
   const x0 = +el.dataset.x0, x1 = +el.dataset.x1, lo = +el.dataset.lo, hi = +el.dataset.hi;
