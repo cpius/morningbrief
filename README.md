@@ -6,15 +6,19 @@ Live at https://morningbrief.dorup.dk (Vercel project `nothing-ever-happens-book
 
 - `python3 refresh.py` fetches Polymarket positions/activity/prices and Open-Meteo forecasts, then writes
   `portfolio.html` and `site/index.html`. It uses only the standard library. The page is the summary, the
-  Profit/Loss card, the positions table, the Mispricing hunt (if `hunt/hunt.py build` ran today, its section from
+  Profit/Loss card, the Positions table and the Mispricing hunt (if `hunt/hunt.py build` ran today, both from
   `hunt/work/section.html`), the weather and positions closed in the last 24h, with a link to the run log at the foot.
+  Since 28 Nov 2026 the hunt's positions table (Hold vs sell until then) is the page's only one: `fill_positions()`
+  puts this script's Value (value at the mid, P/L, cost), 24h (change net of trades, chart, move) and "Why it moved"
+  notes into it, and the totals in its footer, where `hunt.py` left `data-pos` cells and `<!--pos:...-->` comments.
+  The page's own table (`own_table`) shows only on a day the hunt didn't build.
   A menu between the header and the summary (`top_menu()`) has a tab per main section, the hunt's main parts among them
   (from `hunt/work/nav.json`; the main list is "Picks" in its tab and heading), and the page's Refresh button (the hunt's). Slower, Dropped,
   Weather and Closed have no tab. It sticks to the top of the window, and `NAV_JS` lights the tab of the section being
   read: in a part without one, the tab of the part around it (Hunt), or none. Every part of the page shares one column, up to 1304px wide.
   Trades and the biggest movers are printed (`trade:` and `mover:` lines) for the routine's summary, not shown.
 - Sell value (2026-11-20): Value and the P/L follow Polymarket and price positions at the mid, which on a thin book
-  can sit far above any buyer. So the summary's **Sell now** and the positions table's Sell now column show what
+  can sit far above any buyer. So the summary's **Sell now** and the Positions table's footer (or, without the hunt, the page's own table's Sell now column) show what
   selling each whole position now would bring: `sell_fill()` takes the bids from the best one down to `SELL_DEPTH`
   (5¢) below it, best first. Under the cash: the average price and what it gives up against the mid, then the shares
   no bid that close takes (with their value at the mid). Those shares count as unsold, not as worth the stray low bids
@@ -228,10 +232,15 @@ the brief's Sell now column (`sell_fill()`, `SELL_DEPTH`): the average over the 
 it, for as many held shares as they take. `book()` keeps those bids with each pick (`bids`, and `prev_bids` for the
 last run's call); a pick from before them sells at its best bid. The Bid cell shows "sells at" when that is half a
 cent or more under the bid, or when some shares find no bid. Held positions are never auto-dropped and
-leave the book once sold, unless they are also hunt picks. The brief shows the same figure as a chip on each position.
-Its Rec, Shares, Hold vs sell, Per yr, $ edge, Smart $ and Ends heads sort the table (`SORT_JS`; click again to
-reverse). Rec sorts sell, reduce, keep, expand; blanks go last. It is built sorted by Per yr, lowest first, and a
-Refresh re-sorts it at the live figures (`REFRESH_JS` updates each cell's `data-v` sort value with the cell).
+leave the book once sold, unless they are also hunt picks. This table is the page's Positions table (its tab in the
+brief's group of the menu): it opens the section, above the hunt, inside `#hunt-scope`, and refresh.py fills in its
+Value and 24h columns, the "Why it moved" notes and the footer's totals (see refresh.py above). My reasoning sits in a
+row of its own under each position (`more_row()`, `tr.more`), with any "Why it moved" note, so the 13 columns fit
+1304px; below 1380px Smart $ hides. Its Rec, Shares, Value, Hold vs sell, Per yr, $ edge, Smart $, 24h and Ends heads
+sort the table (`SORT_JS`, which keeps each `tr.more` under its position; click again to reverse). Rec sorts sell,
+reduce, keep, expand; blanks go last. It opens sorted by Value, largest first (`SORT_JS` sorts it from the filled-in
+cells on load), and a Refresh re-sorts it at the live figures (`REFRESH_JS` updates each cell's `data-v` sort value
+with the cell; Value and 24h stay as built). deep.py's "Deep dive" chips find its rows by token (`HELD_ROW`).
 
 Every row has a Rec column (`advice()`). A held market (in the positions table, or a held hunt pick) is called by where
 its sell price sits against fair plus the reward (hold vs sell):
@@ -251,16 +260,17 @@ The top menu's **Refresh** button (the hunt's) refetches every order book, updat
 row (the other side sits under the row's price) and redoes the returns and Rec at those prices, with Bigger/Smaller
 edge then measured against the build. It also redraws the Profit/Loss card. The prices that moved most
 (since the build, then since the last refresh) show in a "Recent moves" card under the Profit/Loss card: it ships
-hidden in the hunt section (`#hunt-moves`, with its own rules outside `#hunt`), and `REFRESH_JS` moves it up there and
+hidden in the hunt section (`#hunt-moves`, with its own rules outside `#hunt-scope`), and `REFRESH_JS` moves it up there and
 shows it after the first refresh, with a "Recent moves" tab after Profit/Loss in the top menu (`NAV_JS` rescans its
 tabs when one is added); × hides the card and its tab until the next one. The button's JavaScript (`REFRESH_JS`) repeats `econ()`, `hold_econ()` and
 `advice()`, so a rule change needs the same change there.
 
 Build drops picks that fell below 10% a year or +3% to resolution and moves resolved markets to "Resolved".
 
-The section's styles are nested under `#hunt` (CSS nesting) so they stay out of the rest of the brief, and its first
-rules undo the brief's own table and list rules inside it. Its anchors are `hunt-` prefixed (`#hunt-positions`,
-`#hunt-main`, ...); the brief's "fair · hold vs sell" chips link to `#hunt-positions`. `build` also writes
+The section's styles are nested under `#hunt-scope` (CSS nesting), which holds the Positions table and `#hunt`, so they
+stay out of the rest of the brief, and its first rules undo the brief's own table and list rules inside it. Its anchors
+are `hunt-` prefixed (`#hunt-positions`, `#hunt-main`, ...); the page's own table's "fair · hold vs sell" chips link to
+`#hunt-positions`. `build` also writes
 `hunt/work/nav.json`: the section's tabs (label, anchor, count) and its Refresh button, which refresh.py puts in
 the page's top menu, which also holds the button's styles (its script stays in the section). The brief's column
 (up to 1304px) is wide enough for the hunt's tables; below 1040px they

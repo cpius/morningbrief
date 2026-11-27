@@ -568,6 +568,13 @@ td.mkt a.deep:hover { background: color-mix(in srgb, var(--accent) 16%, transpar
 </style>"""
 ROW = re.compile(r'(<td class="mkt"><a href="https://polymarket\.com/event/([^"]+)">(.*?)</a>\s*'
                  r'<div class="meta"><span class="side">(.*?)</span>.*?)(</div></td>)', re.S)
+OWN_TABLE = re.compile(r'<div class="table-box" id="positions">.*?</table>', re.S)  # refresh.py's own positions table
+# The hunt's Positions table (hunt.py's held_row_html), the page's positions table since 28 Nov 2026: its rows carry the
+# token, and the chip goes at the end of the position's badges.
+HELD_TABLE = re.compile(r'<table class="hunt" id="hunt-held-table">.*?</table>', re.S)
+HELD_ROW = re.compile(r'(<tr data-token="(\d+)"[^>]*>\s*<td class="n">\d*</td>\s*<td class="mkt">'
+                      r'<a href="(?:https://polymarket\.com/event/([^"/?#]+))?[^"]*">[^<]*</a>'
+                      r'<div class="meta">(?:(?!</div>).)*?)(</div>)', re.S)
 FOOT = '<footer class="page-foot">'
 TABS = re.compile(r'(<nav class="topnav"[^>]*><div class="tabs">.*?)(</div>)', re.S)  # the top menu's tabs
 
@@ -584,6 +591,14 @@ def link_brief(page, index):
         return page, 0
     hits = 0
 
+    def link(d, mk):
+        text = f'Deep dive {when(d["ts"])}'
+        if mk.get('price') is not None:
+            text += f' · at {cents(mk["price"])}'
+        if mk.get('fair') is not None:  # the dive's fair value; the hunt book takes it at its next pull (hunt.py apply_dives)
+            text += f' · fair {cents(mk["fair"])}'
+        return f'<a class="deep" href="{html.escape(d["page"])}" title="{html.escape(d.get("verdict") or "")}">{text}</a>'
+
     def chip(m):
         nonlocal hits
         d = dives.get(html.unescape(m.group(2)))
@@ -592,15 +607,25 @@ def link_brief(page, index):
         title, outcome = html.unescape(m.group(3)), html.unescape(m.group(4))
         mk = next((x for x in d.get('markets', []) if x['title'] == title and x['outcome'] == outcome), {})
         hits += 1
-        text = f'Deep dive {when(d["ts"])}'
-        if mk.get('price') is not None:
-            text += f' · at {cents(mk["price"])}'
-        if mk.get('fair') is not None:  # the dive's fair value; the hunt book takes it at its next pull (hunt.py apply_dives)
-            text += f' · fair {cents(mk["fair"])}'
-        return (f'{m.group(1)}<a class="deep" href="{html.escape(d["page"])}" title="{html.escape(d.get("verdict") or "")}">'
-                f'{text}</a>{m.group(5)}')
+        return f'{m.group(1)}{link(d, mk)}{m.group(5)}'
 
-    page = ROW.sub(chip, page)
+    by_asset = {}  # token → (newest deep dive of its event, its market there)
+    for d in sorted(dives.values(), key=lambda d: d['ts']):
+        for mk in d.get('markets', []):
+            if mk.get('asset'):
+                by_asset[str(mk['asset'])] = (d, mk)
+
+    def held_chip(m):  # by the row's token, else (as on the old table) by its event
+        nonlocal hits
+        d = m.group(3) and dives.get(html.unescape(m.group(3)))
+        hit = by_asset.get(m.group(2)) or (d and (d, {}))
+        if not hit:
+            return m.group(0)
+        hits += 1
+        return f'{m.group(1)}{link(*hit)}{m.group(4)}'
+
+    page = OWN_TABLE.sub(lambda t: ROW.sub(chip, t.group(0)), page)
+    page = HELD_TABLE.sub(lambda t: HELD_ROW.sub(held_chip, t.group(0)), page)
     items = ''.join(
         f'<li><span class="li-title"><a href="{html.escape(d["page"])}">{html.escape(d["title"])}</a>'
         f'<span class="faint">{when(d["ts"])}</span></span>'
