@@ -1758,13 +1758,21 @@ def rec_cell(p):
     return f'<b class="{tone}">{label}</b>' + (f'<div class="sub">{esc(sub)}</div>' if sub else '')
 
 
+def held_badge(h):
+    """A held pick's badge: what the shares cost and their average entry, e.g. "$36 @ 0.30" (markHeld mirrors it)."""
+    if not h.get('size') or not h.get('avg'):
+        return '<span class="held">Held</span>'
+    return (f'<span class="held" title="{h["size"]:,.0f} shares at an average {h["avg"]:.3f}">'
+            f'${h["size"] * h["avg"]:,.0f} @ {fv(h["avg"])}</span>')
+
+
 def row_html(i, p, e):
     side = side_pill(p)
     badges = ''
     if p.get('hold'):
         badges += '<span class="apr">3.25% APR</span>'
     if p.get('held'):
-        badges += '<span class="held">Held</span>'
+        badges += held_badge(p['held'])
     if p.get('tag'):
         badges += f'<span class="tag">{esc(p["tag"])}</span>'
     if p.get('added') == str(TODAY):
@@ -2550,7 +2558,7 @@ REFRESH_JS = r"""
       return null;
     }
   };
-  const markHeld = (tr, p) => {  // a row as the wallet holds it now: the Held badge on a pick, the shares on a position
+  const markHeld = (tr, p) => {  // a row as the wallet holds it now: the "$36 @ 0.30" badge on a pick, the shares on a position
     tr.dataset.held = p ? '1' : '0';
     if (tr.dataset.size) {
       tr.dataset.size = p ? p.size : 0;
@@ -2559,13 +2567,20 @@ REFRESH_JS = r"""
       setV(cell(tr, 'Held'), p ? p.size : 0);
       return;
     }
-    const meta = tr.querySelector('.meta'), badge = meta && meta.querySelector('.held');
-    if (!p && badge) badge.remove();
-    if (p && meta && !badge) {
-      const b = document.createElement('span');
-      b.className = 'held'; b.textContent = 'Held';
-      const at = meta.querySelector('.apr') || meta.querySelector('.side');
-      if (at) at.after(b); else meta.prepend(b);
+    const meta = tr.querySelector('.meta');
+    let b = meta && meta.querySelector('.held');
+    if (!p && b) b.remove();
+    if (p && meta) {
+      if (!b) {
+        b = document.createElement('span');
+        b.className = 'held';
+        const at = meta.querySelector('.apr') || meta.querySelector('.side');
+        if (at) at.after(b); else meta.prepend(b);
+      }
+      // what the shares cost and their average entry, as held_badge() writes it
+      const ok = p.size > 0 && p.avg > 0;
+      b.textContent = ok ? `$${Math.round(p.size * p.avg).toLocaleString('en-US')} @ ${fv(p.avg)}` : 'Held';
+      b.title = ok ? `${Math.round(p.size).toLocaleString('en-US')} shares at an average ${p.avg.toFixed(3)}` : '';
     }
   };
   const noSeller = (li, b) => {
