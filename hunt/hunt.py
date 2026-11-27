@@ -565,7 +565,8 @@ def sync_positions(st):
     by_token = {p['token']: p for p in st['picks']}
     seeded = {p['token']: p for p in read(SEED)['picks'] if p.get('fair') is not None}  # values researched when seeding
     for x in pos:
-        held = dict(size=round(x['current_size'], 2), avg=x['avg_price'], cost=round(x['entry_cost_usdc'], 2))
+        held = dict(size=round(x['current_size'], 2), avg=x['avg_price'], cost=round(x['entry_cost_usdc'], 2),
+                    value=round(float(x.get('current_value') or 0), 2))
         if x['token_id'] in by_token:
             by_token[x['token_id']]['held'] = held
             continue
@@ -1446,7 +1447,7 @@ def cmd_build(a):
     extra = [r for r in rows if r[1]['ann'] < MAIN_ANN]
     noask = [p for p in keep if not econ(p) and not p.get('held')]
     held = [(p, hold_econ(p)) for p in keep if p.get('held')]
-    held.sort(key=lambda r: (r[1] is None, r[1]['ann'] if r[1] else 0))  # bid above fair first, unvalued last
+    held.sort(key=lambda r: -held_value(r[0]))  # largest first, as the Positions table opens (SORT_JS redoes it from the cells)
     st['built'] = NOW.isoformat(timespec='seconds')
     try:  # the Kalshi part; never a reason for the build to fail
         kl = kalshi_now(st)
@@ -1851,19 +1852,54 @@ def held_row_html(i, p, h):
     sv = lambda x: '' if x is None else round(x, 6)
     rank = REC_RANK.get(a[1]) if a else None
     smart = (p.get('smart') or {}).get('share')
+    tok = esc(p['token'])
     return f'''<tr {live_attrs(p)} data-size="{d['size']}" data-avg="{d['avg']}" data-sell="{sv(h and h['sell'])}" data-i="{i}">
   <td class="n">{i}</td>
-  <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div>{why}</td>
+  <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side_pill(p)}{badges}</div></td>
   <td class="rec" data-k="Rec" data-v="{sv(rank)}">{rec_cell(p)}</td>
   <td class="num" data-k="Held" data-v="{sv(d['size'])}"><b>{d['size']:,.0f}</b><div class="sub">@ {d['avg']:.3f}</div></td>
+  {pos_cell('value', tok)}
   <td class="num" data-k="Bid"><b>{px(p.get('bid'))}</b>{other_quote('ask', p.get('ask'))}{move}{sells}</td>
   <td class="num" data-k="Fair">{fair}</td>
   <td class="num" data-k="Hold vs sell" data-v="{sv(h and h['tot'])}">{hvs}</td>
   <td class="num" data-k="Per yr" data-v="{sv(h and h['ann'])}">{per_yr}</td>
   <td class="num" data-k="$ edge" data-v="{sv(h and h['edge'])}">{edge}</td>
   <td class="num" data-k="Smart $" data-v="{sv(smart)}">{smart_cell(p)}</td>
-  <td class="num" data-k="Ends" data-v="{end.toordinal()}">{end:%-d %b %Y}</td>
-</tr>'''
+  {pos_cell('d24', tok)}
+  <td class="num" data-k="Ends" data-v="{end.toordinal()}">{end:%-d %b}<div class="sub">{end:%Y}</div></td>
+</tr>{more_row(tok, why)}'''
+
+
+# The Positions table's parts that come from the brief's refresh.py, which fills them in when it puts this section on the
+# page: Value (the position at Polymarket's mid, with its P/L) and 24h (the day's change net of trades, with its chart)
+# per row, a "Why it moved" note under a big mover (more_row's comment), and the totals (the comments in the footer).
+# Until then a cell shows a dash, and a comment shows nothing.
+HELD_COLS = 13
+
+
+def more_row(tok, why):
+    """The row under a position, across the table: my reasoning, then refresh.py's "Why it moved" note when the position
+    moved a lot. Without reasoning there is no row until refresh.py has a note to put in one (the comment carries the
+    table's column count). SORT_JS keeps it under its position."""
+    if not why:
+        return f'<!--pos:whyrow:{tok}:{HELD_COLS}-->'
+    return (f'\n<tr class="more"><td class="n"></td><td class="more-body" colspan="{HELD_COLS - 1}">{why}'
+            f'<!--pos:why:{tok}--></td></tr>')
+
+
+def pos_cell(kind, tok):
+    label, cls = {'value': ('Value', 'num'), 'd24': ('24h', 'num d24')}[kind]
+    return f'<td class="{cls}" data-k="{label}" data-pos="{kind}:{tok}"><span class="faint">–</span></td>'
+
+
+def held_value(p):
+    """A held position's value for the build's order: Polymarket's figure from the last positions sync, else its shares
+    at the mid (or whichever quote there is)."""
+    d = p['held']
+    if d.get('value'):
+        return d['value']
+    q = [x for x in (p.get('bid'), p.get('ask')) if x]
+    return d['size'] * (sum(q) / len(q) if q else d['avg'])
 
 
 # The positions' Rec column sorts by the call: sell, reduce, keep, expand (advice()'s tones; REFRESH_JS has the same)
@@ -1878,9 +1914,10 @@ REC_CALLS = [('Edge reversed, sell', 'down', f'Sell price more than {MIN_EDGE * 
 def held_table_html(held):
     def th(label, key, first='desc', title='', cls=''):
         """A sortable column head: SORT_JS sorts by the cells' data-v, first click `first`, the next one reversed.
-        The build's order (cmd_build) is Per yr, lowest first, so that head starts out marked."""
+        The table opens largest Value first (cmd_build's order, which SORT_JS redoes from the cells), so that head starts
+        out marked."""
         attrs = (f' class="{cls}"' if cls else '') + (f' title="{title}"' if title else '')
-        state = 'ascending' if key == 'Per yr' else 'none'
+        state = 'descending' if key == 'Value' else 'none'
         return (f'<th{attrs} data-sort="{key}" data-first="{first}" aria-sort="{state}">'
                 f'<button type="button" class="sort">{label}</button></th>')
     head = ('<thead><tr><th class="n">#</th><th class="mkt">Position</th>' +
@@ -1888,16 +1925,28 @@ def held_table_html(held):
                'up to 3% over. Expand: below fair, and buying more at the ask would make Picks. Keep: below fair. Bigger or '
                'smaller edge first when hold vs sell moved since the last run (after a refresh, since the build). '
                'Sorts sell first, then reduce, keep and expand.', 'rec') +
-            th('Shares', 'Held') +
+            th('Shares', 'Held', title='Shares held and their average price') +
+            th('Value', 'Value', title='The position at Polymarket\'s mid (as Polymarket values it), the P/L, and what it cost') +
             f'<th title="Best bid for your side; under it the best ask, and the average price your shares sell at when the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take them">Bid</th><th>Fair</th>' +
             th('Hold vs sell', 'Hold vs sell', title='Fair ÷ sell price − 1, plus the holding reward') +
             th('Per yr', 'Per yr', title='Hold vs sell ÷ years to resolution') +
             th('$ edge', '$ edge', title='Shares the bids take × (fair + reward − sell price)') +
             th('Smart $', 'Smart $', title='Share of smart-money dollars on your side') +
+            th('24h', '24h', title='The last 24 hours: the change in the position\'s value net of your trades, with the price chart '
+               '(dashed: the price 24 hours ago)', cls='d24') +
             th('Ends', 'Ends', 'asc') + '</tr></thead>')
     body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
+    # the totals: refresh.py fills in the comments (see pos_cell)
+    foot = ('<tfoot><tr><td class="n"></td>'
+            f'<td class="mkt">Total, {len(held)} open positions</td><td class="rec"></td>'
+            '<td class="num" data-k="Traded"><!--pos:foot:traded--></td>'
+            '<td class="num" data-k="Value"><!--pos:foot:value--></td>'
+            '<td class="num" data-k="Sell now"><!--pos:foot:sell--></td>'
+            '<td data-k="Fair"></td><td data-k="Hold vs sell"></td><td data-k="Per yr"></td><td data-k="$ edge"></td>'
+            '<td data-k="Smart $"></td><td class="num d24" data-k="24h"><!--pos:foot:d24--></td><td data-k="Ends"></td></tr></tfoot>')
     ranks = [REC_RANK[a[1]] if a else None for a in (advice(p) for p, _ in held)]
-    return f'{rec_filter_html(ranks)}<div class="table-box"><table class="hunt" id="hunt-held-table">{head}<tbody>{body}</tbody></table></div>'
+    return (f'{rec_filter_html(ranks)}<div class="table-box"><table class="hunt" id="hunt-held-table">{head}'
+            f'<tbody>{body}</tbody>{foot}</table></div>')
 
 
 def rec_filter_html(ranks):
@@ -2003,8 +2052,9 @@ def kalshi_html(kl):
 
 
 def render(st, main, extra, noask, held, kl=None):
-    """The brief's Mispricing hunt section (markup, styles and scripts, all scoped to #hunt) and its part of the page's top
-    menu (tabs and the Refresh button). refresh.py puts both on the page. kl is the Kalshi part (kalshi_now()) or None."""
+    """The brief's Positions table and Mispricing hunt section (markup, styles and scripts, all scoped to #hunt-scope) and
+    the hunt's part of the page's top menu (tabs and the Refresh button). refresh.py puts both on the page, filling in the
+    Positions table's Value, 24h and "Why it moved" parts (pos_cell). kl is the Kalshi part (kalshi_now()) or None."""
     rows = main + extra
     n_hold = sum(1 for p, _ in rows if p.get('hold'))
     n_fast, n_slow = len(main), len(extra)  # by rate, for the summary stats
@@ -2020,14 +2070,13 @@ def render(st, main, extra, noask, held, kl=None):
     boxes_html = f'<div class="boxes">{"".join(boxes)}</div>' if boxes else ''
     resolved_html = graves_html(st['resolved']) if st['resolved'] else ''
     # the hunt's tabs in the page's top menu, in page order, with their counts: the main parts of the section
-    # (Slower and Dropped have none, at Mads's request on 17 Nov; the main list is "Picks" in its tab and heading)
+    # (Slower and Dropped have none, at Mads's request on 17 Nov; the main list is "Picks" in its tab and heading). The
+    # positions part opens the section, above the hunt, and is the brief's Positions tab (refresh.py's top_menu).
     tabs = [('Hunt', 'hunt', None)]
     if st['notes']:
         tabs.append(('What changed', 'hunt-changes', None))
     if st['resolved']:
         tabs.append(('Resolved', 'hunt-resolved', len(st['resolved'])))
-    if held:
-        tabs.append(('Hold vs sell', 'hunt-positions', len(held)))
     tabs.append(('Picks', 'hunt-main', len(main)))
     if kl:
         tabs.append(('Kalshi', 'hunt-kalshi', len(kl['picks']) + len(kl['pairs'])))
@@ -2058,8 +2107,11 @@ def render(st, main, extra, noask, held, kl=None):
     unvalued = sum(1 for p, _ in held if p.get('fair') is None)
     held_html = ''
     if held:
-        held_html = (f'<section id="hunt-positions"><h3>Your open positions: {len(held)}</h3><p class="note">The same analysis on '
-                     'what the wallet holds. <b>Hold vs sell</b> is what holding to resolution should earn over selling now: '
+        held_html = (f'<section id="hunt-positions"><h3>Your open positions: {len(held)}</h3><p class="note">Everything the '
+                     'wallet holds, with the hunt\'s analysis. <b>Value</b> is the position at Polymarket\'s mid, with the P/L '
+                     'and what it cost; <b>24h</b> is the change over the last day net of your trades, with the price '
+                     'chart (dashed: the price 24 hours ago), and a big mover gets a "Why it moved" note under it. '
+                     '<b>Hold vs sell</b> is what holding to resolution should earn over selling now: '
                      'fair ÷ sell price − 1, plus the holding reward where the market pays it. The sell price is what your shares '
                      f'average when the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take them; it shows under '
                      'the bid when it is lower, with any shares those bids can\'t take, which count neither way. Red means the '
@@ -2069,9 +2121,10 @@ def render(st, main, extra, noask, held, kl=None):
                      f'(outside a fair value\'s own error); <b>Edge gone, reduce</b> when it is at fair up to {MIN_EDGE * 100:.0f}% over; '
                      f'<b>Expand</b> when it is below fair and buying more at the ask would make Picks ({MAIN_ANN * 100:.0f}% a year); '
                      '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
-                     'bigger or smaller since the last run. Sorted by Per yr, lowest first; click Rec, Shares, Hold vs sell, '
-                     'Per yr, $ edge, Smart $ or Ends to sort by it, and again to reverse. The chips above the table show only '
-                     'the Rec calls you pick (several at once if you like); All shows every position again.'
+                     'bigger or smaller since the last run. Sorted by Value, largest first; click Rec, Shares, Value, Hold vs '
+                     'sell, Per yr, $ edge, Smart $, 24h or Ends to sort by it, and again to reverse. The chips above the table '
+                     'show only the Rec calls you pick (several at once if you like); All shows every position again. Refresh '
+                     'redoes Shares, Bid, Rec and the hold-vs-sell figures; Value and 24h stay as built.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
     rest = len(main) - len(fresh)
@@ -2091,10 +2144,12 @@ def render(st, main, extra, noask, held, kl=None):
                 else '')
     kal_swept = f", plus {kl['swept'].get('candidates', 0):,} Kalshi markets" if kl else ''
     return f'''<style>
-/* The brief's Mispricing hunt section. Every rule is nested under #hunt so none reaches the rest of the brief. */
-#hunt {{
+/* The brief's Positions table and Mispricing hunt section. Every rule is nested under #hunt-scope, which holds both, so
+   none reaches the rest of the brief. */
+#hunt-scope {{
   --gold: #8F6200; --gold-bg: #FFF4D1; --gold-line: #E9C46A;
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; min-width: 0; scroll-margin-top: 64px;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; min-width: 0;
+  #hunt {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; min-width: 0; }}
   /* the brief's own table, list and cell rules reach in here: undo what the hunt doesn't set itself */
   table.hunt {{ min-width: 0; }}
   tbody tr:hover td {{ background: none; }}
@@ -2144,7 +2199,30 @@ def render(st, main, extra, noask, held, kl=None):
   td.n, th.n {{ width: 36px; color: var(--faint); text-align: right; font-family: var(--mono); font-size: 12.5px; padding-right: 0; }}
   td.mkt {{ min-width: 260px; width: 42%; }}
   td.mkt a {{ font-weight: 600; line-height: 1.35; }}
+  td.mkt a.deep {{ display: inline-block; font-weight: 500; line-height: 1.5; }}  /* deep.py's chip keeps its own look */
   .meta {{ display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; }}
+  /* the Positions table: 13 columns, so they sit closer, the longer notes under a figure may wrap, and the reasoning
+     goes in a row of its own under the position (tr.more, with refresh.py's "Why it moved"); refresh.py's Value and
+     24h cells, and the totals */
+  #hunt-held-table th, #hunt-held-table td {{ padding-left: 6px; padding-right: 6px; }}
+  #hunt-held-table th, #hunt-held-table th button.sort {{ white-space: normal; vertical-align: bottom; }}
+  #hunt-held-table td.mkt {{ min-width: 180px; width: auto; }}
+  #hunt-held-table td[data-k="Bid"] .sub.down,
+  #hunt-held-table td[data-k="Hold vs sell"] .sub, #hunt-held-table td[data-k="Smart $"] .sub,
+  #hunt-held-table tfoot .sub {{ white-space: normal; }}
+  td.d24 {{ min-width: 0; background: none; }}
+  td.d24 svg.spark {{ position: static; display: block; width: 96px; height: 28px; margin: 0 0 4px auto; }}
+  td.d24 .d24-note {{ font-size: 12px; color: var(--accent); font-family: var(--body); white-space: normal; margin-top: 4px; }}
+  #hunt-held-table tr.more td {{ padding-top: 0; }}
+  tr.more .why {{ margin: 0; max-width: 120ch; }}
+  tr.more .why-box {{ max-width: 120ch; }}
+  tr.more .why + .why-box {{ margin-top: 10px; }}
+  tr:has(+ tr.more) td {{ border-bottom: 0; }}
+  tfoot td {{ border-top: 2px solid var(--ink); border-bottom: 0; background: var(--surface-2); font-weight: 600; }}
+  tfoot td.num b {{ font-weight: 600; }}
+  @media (min-width: 1041px) and (max-width: 1380px) {{  /* too narrow for all 13: Smart $ goes until the cards take over */
+    #hunt-held-table [data-k="Smart $"], #hunt-held-table th[data-sort="Smart $"] {{ display: none; }}
+  }}
   .side, .apr, .tag, .new, .held {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}
   .side {{ font-family: var(--mono); border: 1px solid var(--rule); background: var(--surface-2); }}
   .side.no {{ color: var(--down); }} .side.yes {{ color: var(--up); }}
@@ -2269,6 +2347,14 @@ def render(st, main, extra, noask, held, kl=None):
     td.rec {{ grid-column: span 2; }}  /* room for "Smaller edge, expand" */
     td.num {{ text-align: left; white-space: normal; }}
     td.num::before, td.rec::before {{ content: attr(data-k); display: block; font-family: var(--body); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }}
+    #hunt-held-table td.mkt {{ min-width: 0; width: auto; }}
+    td.d24 {{ grid-column: span 2; }}  /* room for the chart */
+    td.d24 svg.spark {{ margin-left: 0; }}
+    table.hunt tfoot {{ display: block; }}
+    table.hunt tr.more {{ display: block; padding: 0 14px 16px; }}
+    table.hunt tr:has(+ tr.more) {{ border-bottom: 0; }}
+    #hunt-held-table tr.more td {{ padding: 0; }}
+    tfoot td:empty {{ display: none; }}
   }}
   @media print {{
     td {{ padding: 5px 6px; }} th {{ padding: 6px; }}
@@ -2278,11 +2364,11 @@ def render(st, main, extra, noask, held, kl=None):
   }}
 }}
 @media (prefers-color-scheme: dark) {{
-  :root:not([data-theme="light"]) #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
+  :root:not([data-theme="light"]) #hunt-scope {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 }}
-:root[data-theme="dark"] #hunt {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
+:root[data-theme="dark"] #hunt-scope {{ --gold: #F2C14E; --gold-bg: #33290C; --gold-line: #7A5D16; }}
 /* The recent moves after a Refresh: a card under the Profit/Loss one. It ships in this section, hidden, and
-   REFRESH_JS moves it up there, so its rules stand outside #hunt. */
+   REFRESH_JS moves it up there, so its rules stand outside #hunt-scope. */
 #hunt-moves {{
   display: grid; gap: 6px; min-width: 0; padding: 18px 20px 12px; background: var(--surface); border: 1px solid var(--rule);
   border-radius: 10px; scroll-margin-top: 64px;
@@ -2327,6 +2413,8 @@ def render(st, main, extra, noask, held, kl=None):
 @keyframes hunt-spin {{ to {{ transform: rotate(360deg); }} }}
 @keyframes hunt-flash {{ from {{ background: color-mix(in srgb, var(--accent) 22%, transparent); }} to {{ background: transparent; }} }}
 </style>
+<div id="hunt-scope">
+{held_html}
 <section id="hunt" aria-labelledby="hunt-title">
   <div class="hunt-head">
     <div>
@@ -2346,7 +2434,6 @@ def render(st, main, extra, noask, held, kl=None):
   </div>
   {boxes_html}
   {resolved_html}
-  {held_html}
   <section id="hunt-main"><h3>{main_h2}</h3>{main_html}</section>
   {extra_html}
   {kalshi_html(kl)}
@@ -2359,7 +2446,7 @@ def render(st, main, extra, noask, held, kl=None):
     positions' call ("Edge reversed, sell", "Edge gone, reduce", Expand, Keep), with Expand and Keep led by whether the
     position's edge grew or shrank ("Smaller edge, keep").
     <b>Refresh</b> in the top menu refetches every order book from Polymarket, and the wallet's positions, and redoes Bid, Ask, Rec,
-    Return, Per yr, Depth and the positions' figures at those prices: a pick bought since the build gets the Held badge and
+    Return, Per yr, Depth and the positions' figures at those prices: a pick bought since the build gets the "$x @ y" badge and
     the positions' call, one sold loses them. It redraws the Profit/Loss chart at the top too. "Was" and Rec then compare with the prices when the page was built. It does no
     research: fair values and the order stay as built. <b>Fair</b> is my
     probability that our side pays out. <b>Per yr</b> is the return as a yearly rate, return ÷ years to resolution: what
@@ -2381,6 +2468,7 @@ def render(st, main, extra, noask, held, kl=None):
     <p class="moves-foot" id="moves-foot"></p>
   </section>
 </section>
+</div>
 <script>
 {REFRESH_JS}
 </script>
@@ -2693,7 +2781,7 @@ REFRESH_JS = r"""
   if (box) box.querySelector('#moves-close').addEventListener('click', () => { box.hidden = true; showTab(false); });
   const when = btn.querySelector('.when'), lbl = btn.querySelector('.lbl'), stamp = document.getElementById('hunt-asks-at');
   btn.addEventListener('click', async () => {
-    const rows = [...document.querySelectorAll('#hunt [data-token]')];
+    const rows = [...document.querySelectorAll('#hunt-scope [data-token]')];
     const tokens = [...new Set(rows.map(r => r.dataset.token))];
     btn.disabled = true; btn.classList.add('busy'); btn.classList.remove('err'); lbl.textContent = 'Refreshing…';
     try {
@@ -2793,26 +2881,31 @@ SORT_JS = r"""
   // the Rec filter: the calls shown, as the Rec cells' data-v (REC_RANK) or 'none' for a position not valued yet
   const chips = [...document.querySelectorAll('#hunt-rec-filter button[data-rec]')], show = new Set();
   const rec = tr => { const v = val(tr, 'Rec'); return v == null ? 'none' : String(v); };
+  // the row under a position (tr.more: my reasoning, "Why it moved") goes and hides with it
+  const moved = new Map();
+  body.querySelectorAll('tr.more').forEach(w => { if (w.previousElementSibling) moved.set(w.previousElementSibling, w); });
+  const positions = () => [...body.rows].filter(tr => !tr.classList.contains('more'));
   const apply = () => {
     if (by) {
-      const rows = [...body.rows].map(tr => [tr, val(tr, by), +tr.dataset.i]);
+      const rows = positions().map(tr => [tr, val(tr, by), +tr.dataset.i]);
       rows.sort((a, b) => (a[1] == null) - (b[1] == null) || (a[1] == null ? 0 : (a[1] - b[1]) * dir) || a[2] - b[2]);
-      rows.forEach(([tr]) => body.append(tr));
+      rows.forEach(([tr]) => { body.append(tr); if (moved.has(tr)) body.append(moved.get(tr)); });
       heads.forEach(th => th.setAttribute('aria-sort', th.dataset.sort !== by ? 'none' : dir > 0 ? 'ascending' : 'descending'));
     }
     // a refresh can change a call, so the counts and the rows shown are redone every time
-    const counts = {};
+    const counts = {}, all = positions();
     let n = 0, last = null;
-    for (const tr of body.rows) {
-      const k = rec(tr), on = !show.size || show.has(k);
+    for (const tr of all) {
+      const k = rec(tr), on = !show.size || show.has(k), w = moved.get(tr);
       counts[k] = (counts[k] || 0) + 1;
       tr.hidden = !on;
+      if (w) { w.hidden = !on; w.classList.remove('end'); }
       tr.classList.remove('end');
-      if (on) { const c = tr.querySelector('td.n'); if (c) c.textContent = ++n; last = tr; }
+      if (on) { const c = tr.querySelector('td.n'); if (c) c.textContent = ++n; last = w || tr; }
     }
     if (last) last.classList.add('end');
     chips.forEach(b => {
-      const k = b.dataset.rec, c = k ? counts[k] || 0 : body.rows.length;
+      const k = b.dataset.rec, c = k ? counts[k] || 0 : all.length;
       b.querySelector('.c').textContent = c;
       b.setAttribute('aria-pressed', k ? show.has(k) : !show.size);
       b.disabled = !!k && !c && !show.has(k);
@@ -2831,6 +2924,7 @@ SORT_JS = r"""
     apply();
   }));
   document.addEventListener('hunt:refreshed', apply);
+  apply();  // the opening order from the cells refresh.py filled in (Value, largest first)
 })();
 """
 

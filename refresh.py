@@ -4,7 +4,7 @@
 Fetches live positions and the last 24h of wallet activity, computes a
 trade-adjusted 24h change per position, and writes portfolio/portfolio.html.
 """
-import datetime, html, json, os, time, urllib.error, urllib.parse, urllib.request
+import datetime, html, json, os, re, time, urllib.error, urllib.parse, urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -230,14 +230,20 @@ def spark(series, now, p24):
             f'<g class="hover"><line y1="0" y2="{H}"/><circle r="2.5"/></g></svg>')
 
 
-def why(r):
-    """Research row for a significant mover, from research.json when it covers this window."""
+def why_box(r):
+    """The research note for a significant mover, from research.json when it covers this window."""
     n = research.get(r['asset'])
-    if not n or n.get('as_of', '') < f"{WIN:%Y-%m-%d}":
+    if not r['sig'] or not n or n.get('as_of', '') < f"{WIN:%Y-%m-%d}":
         return ''
     src = ' · '.join(f'<a href="{html.escape(s["url"])}">{html.escape(s["label"])}</a>' for s in n.get('sources', []))
-    return (f'<tr class="why"><td colspan="5"><div class="why-box"><span class="why-k">Why it moved</span>'
-            f'<p>{html.escape(n["summary"])}</p>{f"<div class=why-src>{src}</div>" if src else ""}</div></td></tr>')
+    return (f'<div class="why-box"><span class="why-k">Why it moved</span>'
+            f'<p>{html.escape(n["summary"])}</p>{f"<div class=why-src>{src}</div>" if src else ""}</div>')
+
+
+def why(r):
+    """Research row for a significant mover in this page's own positions table."""
+    box = why_box(r)
+    return f'<tr class="why"><td colspan="5">{box}</td></tr>' if box else ''
 
 
 def sell_cell(r):
@@ -523,7 +529,8 @@ def weather_section():
 
 
 def hunt_section():
-    """The Mispricing hunt section (its own styles and scripts, all scoped to #hunt), if hunt/hunt.py built it today."""
+    """The Positions table and the Mispricing hunt (their own styles and scripts, all scoped to #hunt-scope), if
+    hunt/hunt.py built them today, with this script's figures filled into the Positions table (fill_positions)."""
     if not hunt:
         return ''
     try:
@@ -535,6 +542,75 @@ def hunt_section():
     h = hunt
     print(f"  hunt: {h['main']} main picks, {h['hold']} with the APR reward, {h['new']} new, {h['dropped']} dropped; "
           f"{h.get('held', 0)} positions, {len(h.get('held_above') or [])} with the bid above fair")
+    return fill_positions(section)
+
+
+def price(p):
+    return f'{p:.3g}'  # as the hunt writes prices
+
+
+def value_cell(r):
+    """The Positions table's Value: the position at Polymarket's mid, the P/L, and what it cost."""
+    return (f'<td class="num" data-k="Value" data-v="{r["value"]:.2f}"><b>{usd(r["value"])}</b>'
+            f'<div class="sub {tone(r["pnl"])}">{usd(r["pnl"], True)} ({r["pct"]:+.1f}%)</div>'
+            f'<div class="sub">cost {usd(r["traded"])}</div></td>')
+
+
+def d24_cell(r):
+    """The Positions table's 24h: the change in value net of the day's trades, the price chart and the move."""
+    f, dc = r['flows'], r['move']
+    p24 = r['p24'] if r['p24'] is not None else r['now']
+    move = f"{'+' if dc > 0.05 else '−' if dc < -0.05 else '±'}{abs(dc):.1f}¢"
+    notes = [f"bought {f['buy_sh']:,.0f} in last 24h"] if f['buy_sh'] else []
+    if f['sell_sh']:
+        notes.append(f"sold {f['sell_sh']:,.0f} in last 24h")
+    return (f'<td class="num d24" data-k="24h" data-v="{r["d24"]:.2f}">{spark(r["series"], r["now"], r["p24"])}'
+            f'<b class="{tone(r["d24"])}">{usd(r["d24"], True)}</b>'
+            f'<div class="sub">{price(p24)} → {price(r["now"])}</div><div class="sub {tone(dc)}">{move}</div>'
+            + ''.join(f'<div class="d24-note">{n}</div>' for n in notes) + '</td>')
+
+
+def fill_positions(section):
+    """Fill in the hunt's Positions table (hunt.py's pos_cell): each position's Value and 24h cells, a "Why it moved" row
+    under a big mover, and the totals. A position this run doesn't hold keeps its dashes."""
+    if 'data-pos="' not in section:
+        return section
+    placed = section
+    rows = {r['asset']: r for r in open_rows}
+    missing = set()
+
+    def cell(m):
+        r = rows.get(m.group(2))
+        if not r:
+            missing.add(m.group(2))
+            return m.group(0)
+        return value_cell(r) if m.group(1) == 'value' else d24_cell(r)
+
+    def note(m):  # in the row under the position (more_row)
+        r = rows.get(m.group(1))
+        return why_box(r) if r else ''
+
+    def note_row(m):  # a position without reasoning gets that row only for a note
+        box = note(m)
+        return (f'\n<tr class="more"><td class="n"></td><td class="more-body" colspan="{int(m.group(2)) - 1}">{box}</td></tr>'
+                if box else '')
+
+    no_bid = f'<div class="sub down">{usd(unsold_value)} finds no bid</div>' if short_rows else ''
+    foot = dict(traded=f'<b>{usd(tot_cost)}</b><div class="sub">traded</div>',
+                value=f'<b>{usd(tot_value)}</b><div class="sub {tone(tot_pnl)}">{usd(tot_pnl, True)}</div>',
+                sell=(f'<b>{usd(tot_sell)}</b><div class="sub">sell now</div>'
+                      f'<div class="sub {tone(sell_gap)}">{usd(sell_gap, True)} below the mid</div>{no_bid}'),
+                d24=f'<b class="{tone(tot_d24)}">{usd(tot_d24, True)}</b><div class="sub">open positions</div>')
+    section = re.sub(r'<td [^>]*data-pos="(value|d24):(\d+)"[^>]*>.*?</td>', cell, section, flags=re.S)
+    section = re.sub(r'<!--pos:why:(\d+)-->', note, section)
+    section = re.sub(r'<!--pos:whyrow:(\d+):(\d+)-->', note_row, section)
+    section = re.sub(r'<!--pos:foot:(\w+)-->', lambda m: foot.get(m.group(1), ''), section)
+    if missing:
+        print(f'  positions: {len(missing)} in the hunt\'s table but not held now, left with dashes')
+    absent = [r for r in open_rows if f'data-pos="value:{r["asset"]}"' not in placed]
+    if absent:  # bought after the hunt's build: not on the page until it builds again
+        print(f'  positions: WARNING {len(absent)} held but not in the hunt\'s table until hunt.py builds again: '
+              + '; '.join(f"{r['title']} {r['outcome']}" for r in absent))
     return section
 
 
@@ -557,7 +633,7 @@ def top_menu():
     and NAV_JS lights the tab of the section being read."""
     tabs, button = hunt_nav()
     groups = [[('Summary', 'summary', None)] + ([('Profit/Loss', 'pnl', None)] if pnl_html else []) +
-              [('Positions', 'positions', len(open_rows))],
+              [('Positions', 'hunt-positions', hunt.get('held')) if positions_in_hunt else ('Positions', 'positions', len(open_rows))],
               tabs]
     tab = lambda label, to, n: f'<a href="#{to}">{html.escape(label)}{f"<span>{n}</span>" if n is not None else ""}</a>'
     sep = '<span class="sep" aria-hidden="true"></span>'
@@ -612,6 +688,9 @@ pnl_html = pnl_section()
 print_trades(recent_trades())
 weather_html = weather_section()
 hunt_html = hunt_section()
+# Since 28 Nov 2026 (Mads's request) the hunt's Positions table, with this page's Value, 24h and "Why it moved" in it,
+# is the page's only positions table; this page's own table shows only when the hunt didn't build that one today.
+positions_in_hunt = 'id="hunt-positions"' in hunt_html
 menu_html = top_menu()
 
 lower = []
@@ -717,6 +796,20 @@ NAV_JS = r"""<script>
 })();
 </script>"""
 
+
+# This page's own positions table: only when the hunt's Positions table isn't on the page (positions_in_hunt)
+own_table = f'''<div class="table-box" id="positions">
+    <table>
+      <thead><tr><th>Market</th><th>Avg → Now</th><th title="Selling the whole position now: the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take what they can, at the average price shown, which gives up the amount beside it against the mid. Shares beyond those bids find no buyer near the price; their value at the mid is under them.">Sell now</th><th style="text-align:left">24h chart</th><th class="d24h">Last 24h</th></tr></thead>
+      <tbody>{''.join(trs)}</tbody>
+      <tfoot><tr>
+        <td class="mkt">Total, {len(open_rows)} open positions</td>
+        <td class="num">{usd(tot_value)}<div class="sub {tone(tot_pnl)}">{usd(tot_pnl, True)}</div></td>
+        <td class="num">{usd(tot_sell)}<div class="sub {tone(sell_gap)}">{usd(sell_gap, True)} below the mid</div>{f'<div class="sub down">{usd(unsold_value)} finds no bid</div>' if short_rows else ''}</td><td></td>
+        <td class="d24"><div class="d24-top"><b class="{tone(tot_d24)}">{usd(tot_d24, True)}</b></div><div class="sub">open positions only</div></td>
+      </tr></tfoot>
+    </table>
+  </div>'''
 
 page = f'''<title>Nothing Ever Happens Book</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -917,18 +1010,7 @@ code {{ font-family: var(--mono); font-size: 12.5px; }}
 
   {pnl_html}
 
-  <div class="table-box" id="positions">
-    <table>
-      <thead><tr><th>Market</th><th>Avg → Now</th><th title="Selling the whole position now: the bids from the best one down to {SELL_DEPTH * 100:.0f}¢ below it take what they can, at the average price shown, which gives up the amount beside it against the mid. Shares beyond those bids find no buyer near the price; their value at the mid is under them.">Sell now</th><th style="text-align:left">24h chart</th><th class="d24h">Last 24h</th></tr></thead>
-      <tbody>{''.join(trs)}</tbody>
-      <tfoot><tr>
-        <td class="mkt">Total, {len(open_rows)} open positions</td>
-        <td class="num">{usd(tot_value)}<div class="sub {tone(tot_pnl)}">{usd(tot_pnl, True)}</div></td>
-        <td class="num">{usd(tot_sell)}<div class="sub {tone(sell_gap)}">{usd(sell_gap, True)} below the mid</div>{f'<div class="sub down">{usd(unsold_value)} finds no bid</div>' if short_rows else ''}</td><td></td>
-        <td class="d24"><div class="d24-top"><b class="{tone(tot_d24)}">{usd(tot_d24, True)}</b></div><div class="sub">open positions only</div></td>
-      </tr></tfoot>
-    </table>
-  </div>
+  {'' if positions_in_hunt else own_table}
 
   {hunt_html}
 
