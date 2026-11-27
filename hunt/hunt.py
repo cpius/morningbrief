@@ -1860,6 +1860,11 @@ def held_row_html(i, p, h):
 
 # The positions' Rec column sorts by the call: sell, reduce, keep, expand (advice()'s tones; REFRESH_JS has the same)
 REC_RANK = {'down': 0, 'warn': 1, 'ink': 2, 'up': 3}
+# The Rec filter's chips, in that order: the call, its tone, and the chip's tooltip
+REC_CALLS = [('Edge reversed, sell', 'down', f'Sell price more than {MIN_EDGE * 100:.0f}% over fair'),
+             ('Edge gone, reduce', 'warn', f'Sell price at fair up to {MIN_EDGE * 100:.0f}% over'),
+             ('Keep', 'ink', 'Below fair; with Bigger edge, keep and Smaller edge, keep'),
+             ('Expand', 'up', 'Below fair, and buying more at the ask would make Picks; with Bigger and Smaller edge, expand')]
 
 
 def held_table_html(held):
@@ -1883,8 +1888,22 @@ def held_table_html(held):
             th('Smart $', 'Smart $', title='Share of smart-money dollars on your side') +
             th('Ends', 'Ends', 'asc') + '</tr></thead>')
     body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
-    return f'<div class="table-box"><table class="hunt" id="hunt-held-table">{head}<tbody>{body}</tbody></table></div>'
+    ranks = [REC_RANK[a[1]] if a else None for a in (advice(p) for p, _ in held)]
+    return f'{rec_filter_html(ranks)}<div class="table-box"><table class="hunt" id="hunt-held-table">{head}<tbody>{body}</tbody></table></div>'
 
+
+def rec_filter_html(ranks):
+    """The positions' Rec filter (SORT_JS): a toggle chip per call with its count, from the rows' REC_RANK (None for a
+    position not valued yet). None pressed shows every row; SORT_JS redoes the counts after a refresh."""
+    def chip(key, label, tone, n, title):
+        return (f'<button type="button" class="{tone}" data-rec="{key}" aria-pressed="false" title="{title}"'
+                f'{" disabled" if not n else ""}>{label} <span class="c">{n}</span></button>')
+    chips = (f'<button type="button" data-rec="" aria-pressed="true" title="Every position">All <span class="c">{len(ranks)}</span></button>' +
+             ''.join(chip(REC_RANK[tone], label, tone, ranks.count(REC_RANK[tone]), title) for label, tone, title in REC_CALLS))
+    if None in ranks:
+        chips += chip('none', 'Not valued', 'flat', ranks.count(None), 'No fair value yet, so no call')
+    return (f'<div class="rec-filter" id="hunt-rec-filter" role="group" aria-label="Show positions by Rec"><span class="k">Show</span>'
+            f'{chips}</div>')
 
 def kalshi_html(kl):
     """The hunt's Kalshi part (kalshi_now()): cross-venue pairs, Kalshi picks, and book picks cheaper on Kalshi.
@@ -2043,7 +2062,8 @@ def render(st, main, extra, noask, held, kl=None):
                      f'<b>Expand</b> when it is below fair and buying more at the ask would make Picks ({MAIN_ANN * 100:.0f}% a year); '
                      '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
                      'bigger or smaller since the last run. Sorted by Per yr, lowest first; click Rec, Shares, Hold vs sell, '
-                     'Per yr, $ edge, Smart $ or Ends to sort by it, and again to reverse.'
+                     'Per yr, $ edge, Smart $ or Ends to sort by it, and again to reverse. The chips above the table show only '
+                     'the Rec calls you pick (several at once if you like); All shows every position again.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
     main_html = table_html(main) if main else f'<p class="note">Nothing clears {MAIN_ANN * 100:.0f}% a year today.</p>'
     rest = len(main) - len(fresh)
@@ -2135,6 +2155,24 @@ def render(st, main, extra, noask, held, kl=None):
   th[aria-sort="ascending"] button.sort, th[aria-sort="descending"] button.sort {{ color: var(--ink); }}
   th[aria-sort="ascending"] button.sort::after {{ content: '▴'; visibility: visible; }}
   th[aria-sort="descending"] button.sort::after {{ visibility: visible; }}
+  /* the positions' Rec filter (SORT_JS): toggle chips in the Rec column's colours, none pressed shows every row */
+  .rec-filter {{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 12px; }}
+  .rec-filter .k {{ font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-right: 4px; }}
+  .rec-filter button {{ font: inherit; font-size: 12.5px; font-weight: 600; line-height: 1.5; padding: 3px 11px; border-radius: 999px;
+                        cursor: pointer; color: var(--ink); background: none; border: 1px solid var(--rule); }}
+  .rec-filter button.up {{ color: var(--up); }} .rec-filter button.down {{ color: var(--down); }}
+  .rec-filter button.warn {{ color: var(--warn-ink); }} .rec-filter button.flat {{ color: var(--muted); }}
+  .rec-filter button .c {{ font-family: var(--mono); font-weight: 500; color: var(--faint); margin-left: 3px; }}
+  .rec-filter button:hover {{ border-color: currentColor; }}
+  .rec-filter button:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+  .rec-filter button:disabled {{ opacity: .4; cursor: default; border-color: var(--rule); }}
+  .rec-filter button[aria-pressed="true"] {{ background: var(--surface-2); border-color: currentColor; }}
+  .rec-filter button.up[aria-pressed="true"] {{ background: color-mix(in srgb, var(--up) 13%, transparent); }}
+  .rec-filter button.down[aria-pressed="true"] {{ background: color-mix(in srgb, var(--down) 13%, transparent); }}
+  .rec-filter button.warn[aria-pressed="true"] {{ background: var(--warn-bg); }}
+  .rec-filter button[aria-pressed="true"] .c {{ color: inherit; }}
+  table.hunt tr[hidden] {{ display: none !important; }}
+  table.hunt tr.end td {{ border-bottom: 0; }}  /* the last row the filter shows */
   td.rec b {{ display: inline-block; font-size: 12.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; line-height: 1.5;
               color: var(--ink); background: var(--surface-2); }}
   td.rec b.up {{ color: var(--up); background: color-mix(in srgb, var(--up) 13%, transparent); }}
@@ -2216,7 +2254,7 @@ def render(st, main, extra, noask, held, kl=None):
     table.hunt thead {{ display: none; }}
     table.hunt, table.hunt tbody {{ display: block; }}
     table.hunt tr {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px 12px; padding: 14px 14px 16px; border-bottom: 1px solid var(--rule); }}
-    table.hunt tr:last-child {{ border-bottom: 0; }}
+    table.hunt tr:last-child, table.hunt tr.end {{ border-bottom: 0; }}
     table.hunt td {{ padding: 0; border: 0; }}
     td.n {{ display: none; }}
     td.mkt {{ grid-column: 1 / -1; min-width: 0; width: auto; }}
@@ -2737,17 +2775,44 @@ SORT_JS = r"""
     const td = tr.querySelector(`td[data-k="${k}"]`), v = td ? td.dataset.v : '';
     return v === '' || v == null || isNaN(+v) ? null : +v;
   };
+  // the Rec filter: the calls shown, as the Rec cells' data-v (REC_RANK) or 'none' for a position not valued yet
+  const chips = [...document.querySelectorAll('#hunt-rec-filter button[data-rec]')], show = new Set();
+  const rec = tr => { const v = val(tr, 'Rec'); return v == null ? 'none' : String(v); };
   const apply = () => {
-    if (!by) return;
-    const rows = [...body.rows].map(tr => [tr, val(tr, by), +tr.dataset.i]);
-    rows.sort((a, b) => (a[1] == null) - (b[1] == null) || (a[1] == null ? 0 : (a[1] - b[1]) * dir) || a[2] - b[2]);
-    rows.forEach(([tr], n) => { const c = tr.querySelector('td.n'); if (c) c.textContent = n + 1; body.append(tr); });
-    heads.forEach(th => th.setAttribute('aria-sort', th.dataset.sort !== by ? 'none' : dir > 0 ? 'ascending' : 'descending'));
+    if (by) {
+      const rows = [...body.rows].map(tr => [tr, val(tr, by), +tr.dataset.i]);
+      rows.sort((a, b) => (a[1] == null) - (b[1] == null) || (a[1] == null ? 0 : (a[1] - b[1]) * dir) || a[2] - b[2]);
+      rows.forEach(([tr]) => body.append(tr));
+      heads.forEach(th => th.setAttribute('aria-sort', th.dataset.sort !== by ? 'none' : dir > 0 ? 'ascending' : 'descending'));
+    }
+    // a refresh can change a call, so the counts and the rows shown are redone every time
+    const counts = {};
+    let n = 0, last = null;
+    for (const tr of body.rows) {
+      const k = rec(tr), on = !show.size || show.has(k);
+      counts[k] = (counts[k] || 0) + 1;
+      tr.hidden = !on;
+      tr.classList.remove('end');
+      if (on) { const c = tr.querySelector('td.n'); if (c) c.textContent = ++n; last = tr; }
+    }
+    if (last) last.classList.add('end');
+    chips.forEach(b => {
+      const k = b.dataset.rec, c = k ? counts[k] || 0 : body.rows.length;
+      b.querySelector('.c').textContent = c;
+      b.setAttribute('aria-pressed', k ? show.has(k) : !show.size);
+      b.disabled = !!k && !c && !show.has(k);
+    });
   };
   heads.forEach(th => th.querySelector('button').addEventListener('click', () => {
     const k = th.dataset.sort;
     dir = k === by ? -dir : th.dataset.first === 'asc' ? 1 : -1;
     by = k;
+    apply();
+  }));
+  // a chip toggles its call (pressing several shows them together); All shows every row again
+  chips.forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.rec;
+    if (!k) show.clear(); else if (!show.delete(k)) show.add(k);
     apply();
   }));
   document.addEventListener('hunt:refreshed', apply);
