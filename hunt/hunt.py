@@ -1789,7 +1789,6 @@ def row_html(i, p, e):
     tone = 'r3' if e['ann'] >= 1 else 'r2' if e['ann'] >= 0.5 else 'r1' if e['ann'] >= MAIN_ANN else 'r0'
     bonus = f'<div class="sub gold">incl. +{e["bonus"] * 100:.1f}% reward</div>' if p.get('hold') else ''
     smart = smart_cell(p)
-    end = datetime.date.fromisoformat(p['end'])
     return f'''<tr id="m{esc(p['id'])}" {live_attrs(p)}>
   <td class="n">{i}</td>
   <td class="mkt"><a href="{esc(p['url'])}">{esc(p['name'])}</a><div class="meta">{side}{badges}</div><p class="why">{esc(p['why'])}</p></td>
@@ -1800,7 +1799,6 @@ def row_html(i, p, e):
   <td class="num ret {tone}" data-k="Per yr"><b>{pct(e['ann'])}</b></td>
   <td class="num" data-k="Smart $">{smart}</td>
   <td class="num" data-k="Depth">${p.get('depth') or 0:,}</td>
-  <td class="num" data-k="Ends">{end:%-d %b %Y}</td>
 </tr>'''
 
 
@@ -1811,7 +1809,7 @@ def table_html(rows):
             '<th title="Best ask for our side; under it the best bid">Ask</th><th>Fair</th>'
             '<th title="Fair ÷ ask − 1 held to resolution, plus the holding reward">Return</th>'
             '<th title="Return ÷ years to resolution; the list is ranked by it, after today\'s new picks">Per yr ▾</th>'
-            '<th title="Share of smart-money dollars on our side">Smart $</th><th>Depth</th><th>Ends</th></tr></thead>')
+            '<th title="Share of smart-money dollars on our side">Smart $</th><th>Depth</th></tr></thead>')
     body = '\n'.join(row_html(i, p, e) for i, (p, e) in enumerate(rows, 1))
     return f'<div class="table-box"><table class="hunt">{head}<tbody>{body}</tbody></table></div>'
 
