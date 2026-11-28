@@ -229,12 +229,21 @@ class Book:
                 continue
             a = self.meta[tok]
             p0, p1 = (p0 if h0 > 1e-6 else None), (p1 if h1 > 1e-6 else None)
-            if any(kind == 'redeem' and t0 < ts <= t1 for ts, _, _, kind in events):
-                move = f'{cents(p0)} → redeemed' if p0 is not None else 'bought and redeemed'
-            elif p0 is None:
-                move = f'new, now {cents(p1)}' if p1 is not None else 'bought and sold'
+            def fill(kind, side):  # average price of the window's buys (side 1), sells or redemptions (side -1)
+                n = c = 0.0
+                for ts, dh, dc, k in events:
+                    if k == kind and t0 < ts <= t1 and dh * side > 0:
+                        n += abs(dh); c += abs(dc)
+                return c / n if n > 1e-9 else None
+            # how it ended: what a redemption paid (100¢ won, 0¢ lost), else the price it sold at once all is gone
+            paid = fill('redeem', -1)
+            end = paid if paid is not None else fill('trade', -1) if p1 is None else None
+            if p0 is None:
+                buy = fill('trade', 1)
+                move = (f"bought{' ' + cents(buy) if buy is not None else ''} → {cents(end)}" if end is not None
+                        else f'new, now {cents(p1)}' if p1 is not None else 'bought and sold')
             else:
-                move = f"{cents(p0)} → {cents(p1) if p1 is not None else 'sold'}"
+                move = f"{cents(p0)} → {cents(end) if end is not None else cents(p1) if p1 is not None else 'sold'}"
             known = self.labels.get(question(a['title']).lower())
             out.append(dict(d=v1 - v0, title=a['title'], side=a['outcome'], move=move,
                             short=known or rule_name(a['title']), by_rule=not known,
@@ -905,10 +914,18 @@ JS = r"""
         if (Math.abs(v1 - v0) < 0.005) continue;
         const a = meta.get(tok);
         p0 = h0 > 1e-6 ? p0 : null; p1 = h1 > 1e-6 ? p1 : null;
+        const fill = (kind, side) => {  // average price of the window's buys (side 1), sells or redemptions (side -1)
+          let n = 0, c = 0;
+          for (const [ts, dh, dc, k] of evs) if (k === kind && t0 < ts && ts <= t1 && dh * side > 0) { n += Math.abs(dh); c += Math.abs(dc); }
+          return n > 1e-9 ? c / n : null;
+        };
+        // how it ended: what a redemption paid (100¢ won, 0¢ lost), else the price it sold at once all is gone
+        const paid = fill('redeem', -1), end = paid != null ? paid : p1 == null ? fill('trade', -1) : null;
         let move;
-        if (evs.some(([ts, , , kind]) => kind === 'redeem' && t0 < ts && ts <= t1)) move = p0 != null ? `${cents(p0)} → redeemed` : 'bought and redeemed';
-        else if (p0 == null) move = p1 != null ? `new, now ${cents(p1)}` : 'bought and sold';
-        else move = `${cents(p0)} → ${p1 != null ? cents(p1) : 'sold'}`;
+        if (p0 == null) {
+          const buy = fill('trade', 1);
+          move = end != null ? `bought${buy != null ? ' ' + cents(buy) : ''} → ${cents(end)}` : p1 != null ? `new, now ${cents(p1)}` : 'bought and sold';
+        } else move = `${cents(p0)} → ${end != null ? cents(end) : p1 != null ? cents(p1) : 'sold'}`;
         out.push({ d: v1 - v0, title: a.title, side: a.outcome, move, short: cfg.labels[question(a.title).toLowerCase()] || ruleName(a.title),
                    url: a.event_slug ? `https://polymarket.com/event/${a.event_slug}` : '' });
       }
