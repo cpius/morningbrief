@@ -1963,7 +1963,6 @@ def kalshi_html(kl):
     if not kl:
         return ''
     sw = kl['swept']
-    day = lambda d: f'{datetime.date.fromisoformat(d):%-d %b %Y}'
     tone = lambda a: 'r3' if a >= 1 else 'r2' if a >= 0.5 else 'r1' if a >= MAIN_ANN else 'r0'
     def badge(x):
         if x['checked']:
@@ -1985,13 +1984,12 @@ def kalshi_html(kl):
   <td class="num" data-k="Cost"><b>{x['cost']:.3f}</b></td>
   <td class="num" data-k="Return"><b>{x['tot'] * 100:+.1f}%</b></td>
   <td class="num ret {tone(x['ann'])}" data-k="Per yr"><b>{pct(x['ann'])}</b></td>
-  <td class="num" data-k="Ends">{day(x['end'])}</td>
 </tr>''')
     pairs = (f'<div class="table-box"><table class="hunt"><thead><tr><th class="n">#</th><th class="mkt">Pair</th>'
              '<th title="Kalshi side and ask; under it the cost with Kalshi\'s taker fee">Kalshi leg</th>'
              '<th title="Polymarket side and ask (a NO costs 1 − the YES bid); under it the cost with its taker fee">Polymarket leg</th>'
              '<th title="Both legs with their fees; the pair pays at least $1">Cost</th>'
-             '<th title="1 ÷ cost − 1">Return</th><th title="Return ÷ years to the later end">Per yr ▾</th><th>Ends</th></tr></thead>'
+             '<th title="1 ÷ cost − 1">Return</th><th title="Return ÷ years to the later end">Per yr ▾</th></tr></thead>'
              f'<tbody>{"".join(pair_rows)}</tbody></table></div>' if pair_rows else
              f'<p class="note">No pair makes {PAIR_MIN * 100:.0f}% or more after both fees today.</p>')
     pick_rows = []
@@ -2012,14 +2010,13 @@ def kalshi_html(kl):
   <td class="num ret {tone(x['ann'])}" data-k="Per yr"><b>{pct(x['ann'])}</b></td>
   <td class="num" data-k="Polymarket">{poly}</td>
   <td class="num" data-k="Open int.">{x['oi']:,}</td>
-  <td class="num" data-k="Ends">{day(x['end'])}</td>
 </tr>''')
     more = len(kl['picks']) - len(pick_rows)
     picks = (f'<div class="table-box"><table class="hunt"><thead><tr><th class="n">#</th><th class="mkt">Kalshi market</th>'
              '<th title="Kalshi\'s ask for our side plus its taker fee, per contract">Cost</th><th>Fair</th>'
              '<th title="Fair ÷ cost − 1, held to resolution">Return</th><th title="Return ÷ years to resolution">Per yr ▾</th>'
              '<th title="The same side on Polymarket with its fee, where the twin has the same rules">Polymarket</th>'
-             '<th title="Contracts open on Kalshi">Open int.</th><th>Ends</th></tr></thead>'
+             '<th title="Contracts open on Kalshi">Open int.</th></tr></thead>'
              f'<tbody>{"".join(pick_rows)}</tbody></table></div>'
              + (f'<p class="note">{more} more below these {len(pick_rows)}.</p>' if more > 0 else '') if pick_rows else
              f'<p class="note">No Kalshi market clears {MAIN_ANN * 100:.0f}% a year after the fee today.</p>')
