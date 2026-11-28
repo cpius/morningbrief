@@ -1846,7 +1846,6 @@ def held_row_html(i, p, h):
     else:
         hvs = per_yr = edge = '<span class="faint">–</span>'
     why = f'<p class="why">{esc(p["why"])}</p>' if p.get('why') else ''
-    end = datetime.date.fromisoformat(p['end'])
     # each sortable cell's value for SORT_JS (empty sorts last); REFRESH_JS rewrites them with the cells
     a = advice(p)
     sv = lambda x: '' if x is None else round(x, 6)
@@ -1866,7 +1865,6 @@ def held_row_html(i, p, h):
   <td class="num" data-k="$ edge" data-v="{sv(h and h['edge'])}">{edge}</td>
   <td class="num" data-k="Smart $" data-v="{sv(smart)}">{smart_cell(p)}</td>
   {pos_cell('d24', tok)}
-  <td class="num" data-k="Ends" data-v="{end.toordinal()}">{end:%-d %b}<div class="sub">{end:%Y}</div></td>
 </tr>{more_row(tok, why)}'''
 
 
@@ -1874,7 +1872,7 @@ def held_row_html(i, p, h):
 # page: Value (the position at Polymarket's mid, with its P/L) and 24h (the day's change net of trades, with its chart)
 # per row, a "Why it moved" note under a big mover (more_row's comment), and the totals (the comments in the footer).
 # Until then a cell shows a dash, and a comment shows nothing.
-HELD_COLS = 13
+HELD_COLS = 12
 
 
 def more_row(tok, why):
@@ -1933,8 +1931,7 @@ def held_table_html(held):
             th('$ edge', '$ edge', title='Shares the bids take × (fair + reward − sell price)') +
             th('Smart $', 'Smart $', title='Share of smart-money dollars on your side') +
             th('24h', '24h', title='The last 24 hours: the change in the position\'s value net of your trades, with the price chart '
-               '(dashed: the price 24 hours ago)', cls='d24') +
-            th('Ends', 'Ends', 'asc') + '</tr></thead>')
+               '(dashed: the price 24 hours ago)', cls='d24') + '</tr></thead>')
     body = '\n'.join(held_row_html(i, p, h) for i, (p, h) in enumerate(held, 1))
     # the totals: refresh.py fills in the comments (see pos_cell)
     foot = ('<tfoot><tr><td class="n"></td>'
@@ -1943,7 +1940,7 @@ def held_table_html(held):
             '<td class="num" data-k="Value"><!--pos:foot:value--></td>'
             '<td class="num" data-k="Sell now"><!--pos:foot:sell--></td>'
             '<td data-k="Fair"></td><td data-k="Hold vs sell"></td><td data-k="Per yr"></td><td data-k="$ edge"></td>'
-            '<td data-k="Smart $"></td><td class="num d24" data-k="24h"><!--pos:foot:d24--></td><td data-k="Ends"></td></tr></tfoot>')
+            '<td data-k="Smart $"></td><td class="num d24" data-k="24h"><!--pos:foot:d24--></td></tr></tfoot>')
     ranks = [REC_RANK[a[1]] if a else None for a in (advice(p) for p, _ in held)]
     return (f'{rec_filter_html(ranks)}<div class="table-box"><table class="hunt" id="hunt-held-table">{head}'
             f'<tbody>{body}</tbody>{foot}</table></div>')
@@ -2122,7 +2119,7 @@ def render(st, main, extra, noask, held, kl=None):
                      f'<b>Expand</b> when it is below fair and buying more at the ask would make Picks ({MAIN_ANN * 100:.0f}% a year); '
                      '<b>Keep</b> when it is below fair, however thin the edge. Keep and Expand say first whether the edge got '
                      'bigger or smaller since the last run. Sorted by Value, largest first; click Rec, Shares, Value, Hold vs '
-                     'sell, Per yr, $ edge, Smart $, 24h or Ends to sort by it, and again to reverse. The chips above the table '
+                     'sell, Per yr, $ edge, Smart $ or 24h to sort by it, and again to reverse. The chips above the table '
                      'show only the Rec calls you pick (several at once if you like); All shows every position again. Refresh '
                      'redoes Shares, Bid, Rec and the hold-vs-sell figures; Value and 24h stay as built.'
                      f'{f" {unvalued} not valued yet." if unvalued else ""}</p>{held_table_html(held)}</section>')
@@ -2201,7 +2198,7 @@ def render(st, main, extra, noask, held, kl=None):
   td.mkt a {{ font-weight: 600; line-height: 1.35; }}
   td.mkt a.deep {{ display: inline-block; font-weight: 500; line-height: 1.5; }}  /* deep.py's chip keeps its own look */
   .meta {{ display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 5px; }}
-  /* the Positions table: 13 columns, so they sit closer, the longer notes under a figure may wrap, and the reasoning
+  /* the Positions table: 12 columns, so they sit closer, the longer notes under a figure may wrap, and the reasoning
      goes in a row of its own under the position (tr.more, with refresh.py's "Why it moved"); refresh.py's Value and
      24h cells, and the totals */
   #hunt-held-table th, #hunt-held-table td {{ padding-left: 6px; padding-right: 6px; }}
@@ -2220,7 +2217,7 @@ def render(st, main, extra, noask, held, kl=None):
   tr:has(+ tr.more) td {{ border-bottom: 0; }}
   tfoot td {{ border-top: 2px solid var(--ink); border-bottom: 0; background: var(--surface-2); font-weight: 600; }}
   tfoot td.num b {{ font-weight: 600; }}
-  @media (min-width: 1041px) and (max-width: 1380px) {{  /* too narrow for all 13: Smart $ goes until the cards take over */
+  @media (min-width: 1041px) and (max-width: 1289px) {{  /* too narrow for all 12: Smart $ goes until the cards take over */
     #hunt-held-table [data-k="Smart $"], #hunt-held-table th[data-sort="Smart $"] {{ display: none; }}
   }}
   .side, .apr, .tag, .new, .held {{ font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; line-height: 1.5; }}

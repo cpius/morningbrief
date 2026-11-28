@@ -235,8 +235,8 @@ cent or more under the bid, or when some shares find no bid. Held positions are 
 leave the book once sold, unless they are also hunt picks. This table is the page's Positions table (its tab in the
 brief's group of the menu): it opens the section, above the hunt, inside `#hunt-scope`, and refresh.py fills in its
 Value and 24h columns, the "Why it moved" notes and the footer's totals (see refresh.py above). My reasoning sits in a
-row of its own under each position (`more_row()`, `tr.more`), with any "Why it moved" note, so the 13 columns fit
-1304px; below 1380px Smart $ hides. Its Rec, Shares, Value, Hold vs sell, Per yr, $ edge, Smart $, 24h and Ends heads
+row of its own under each position (`more_row()`, `tr.more`), with any "Why it moved" note, so the 12 columns fit
+1304px; below 1290px Smart $ hides. Its Rec, Shares, Value, Hold vs sell, Per yr, $ edge, Smart $ and 24h heads
 sort the table (`SORT_JS`, which keeps each `tr.more` under its position; click again to reverse). Rec sorts sell,
 reduce, keep, expand; blanks go last. It opens sorted by Value, largest first (`SORT_JS` sorts it from the filled-in
 cells on load), and a Refresh re-sorts it at the live figures (`REFRESH_JS` updates each cell's `data-v` sort value
